@@ -74,7 +74,7 @@ import {
   ExportProgressModal,
   type ExportStatus,
 } from "../components/modals/ExportProgressModal";
-import { splitQueries, extractTableName, getExplainableQueries } from "../utils/sql";
+import { splitQueries, extractTableName } from "../utils/sql";
 import {
   createResultEntries,
   updateResultEntry,
@@ -120,6 +120,16 @@ import {
 } from "../utils/tabScroll";
 import { toggleSortClause } from "../utils/sortClause";
 import { composeWindowTitle } from "../utils/windowTitle";
+import {
+  deriveColumnMetadata,
+  emptyColumnMetadata,
+  fillMissingColumnMetadata,
+} from "../utils/columnMetadata";
+import {
+  getEditorSelectionText,
+  getEditorTextOrSelection,
+} from "../utils/monacoEditor";
+import { resolveExplainTarget } from "../utils/explainRouting";
 import clsx from "clsx";
 
 interface EditorState {
@@ -473,24 +483,10 @@ export const Editor = () => {
             return [] as ForeignKey[];
           }),
         ]);
-        const pk = cols.find((c) => c.is_pk);
-        const autoInc = cols
-          .filter((c) => c.is_auto_increment)
-          .map((c) => c.name);
-        const defaultVal = cols
-          .filter(
-            (c) => c.default_value !== undefined && c.default_value !== null,
-          )
-          .map((c) => c.name);
-        const nullable = cols.filter((c) => c.is_nullable).map((c) => c.name);
         const targetId = tabId || activeTabId;
         if (targetId)
           updateTab(targetId, {
-            pkColumn: pk ? pk.name : null,
-            autoIncrementColumns: autoInc,
-            defaultValueColumns: defaultVal,
-            nullableColumns: nullable,
-            columnMetadata: cols,
+            ...deriveColumnMetadata(cols),
             foreignKeys: fks,
           });
       } catch (e) {
@@ -499,11 +495,7 @@ export const Editor = () => {
         const targetId = tabId || activeTabId;
         if (targetId)
           updateTab(targetId, {
-            pkColumn: null,
-            autoIncrementColumns: [],
-            defaultValueColumns: [],
-            nullableColumns: [],
-            columnMetadata: [],
+            ...emptyColumnMetadata(),
             foreignKeys: [],
           });
       }
@@ -1003,12 +995,9 @@ export const Editor = () => {
       return;
     }
     const editor = editorsRef.current[activeTab.id];
-    const selection = editor.getSelection();
-    const selectedText = selection
-      ? editor.getModel()?.getValueInRange(selection)
-      : undefined;
+    const selectedText = getEditorSelectionText(editor);
 
-    if (selectedText && selection && !selection.isEmpty()) {
+    if (selectedText) {
       const selectedQueries = splitQueries(selectedText);
       if (selectedQueries.length > 1) {
         runMultipleQueries(selectedQueries);
@@ -1037,30 +1026,23 @@ export const Editor = () => {
   const handleExplainButton = useCallback(() => {
     if (!activeTab || !activeConnectionId) return;
 
-    // Get text: selection first, then full editor content, then saved query
     const editor = editorsRef.current[activeTab.id];
-    let text = "";
-    if (editor) {
-      const selection = editor.getSelection();
-      const selectedText = selection && !selection.isEmpty()
-        ? editor.getModel()?.getValueInRange(selection)
-        : undefined;
-      text = (selectedText || editor.getValue()).trim();
-    } else {
-      text = (activeTab.query ?? "").trim();
-    }
+    const text = editor
+      ? getEditorTextOrSelection(editor)
+      : (activeTab.query ?? "").trim();
 
-    if (!text) return;
-
-    const explainable = getExplainableQueries(text);
-    if (explainable.length === 0) {
-      // No explainable queries — open modal with full text so it shows the error
-      openExplainForQuery(text);
-    } else if (explainable.length === 1) {
-      openExplainForQuery(explainable[0].query);
-    } else {
-      setExplainSelectableQueries(explainable);
-      setIsExplainSelectionOpen(true);
+    const target = resolveExplainTarget(text);
+    switch (target.kind) {
+      case "none":
+        return;
+      case "fallback":
+      case "single":
+        openExplainForQuery(target.query);
+        return;
+      case "choose":
+        setExplainSelectableQueries(target.choices);
+        setIsExplainSelectionOpen(true);
+        return;
     }
   }, [activeTab, activeConnectionId, openExplainForQuery]);
 
@@ -1475,40 +1457,7 @@ export const Editor = () => {
         };
       }
 
-      // Ensure pkColumn and autoIncrementColumns are set
-      if (!activeTab.pkColumn) {
-        const pk = columns.find((c) => c.is_pk);
-        if (pk) {
-          updates.pkColumn = pk.name;
-        }
-      }
-
-      if (!activeTab.autoIncrementColumns) {
-        const autoInc = columns
-          .filter((c) => c.is_auto_increment)
-          .map((c) => c.name);
-        updates.autoIncrementColumns = autoInc;
-      }
-
-      if (!activeTab.defaultValueColumns) {
-        const defaultVal = columns
-          .filter(
-            (c) => c.default_value !== undefined && c.default_value !== null,
-          )
-          .map((c) => c.name);
-        updates.defaultValueColumns = defaultVal;
-      }
-
-      if (!activeTab.nullableColumns) {
-        const nullable = columns
-          .filter((c) => c.is_nullable)
-          .map((c) => c.name);
-        updates.nullableColumns = nullable;
-      }
-
-      if (!activeTab.columnMetadata) {
-        updates.columnMetadata = columns;
-      }
+      Object.assign(updates, fillMissingColumnMetadata(activeTab, columns));
 
       updateTab(activeTabIdRef.current, updates);
     } catch (err) {
@@ -1719,11 +1668,7 @@ export const Editor = () => {
       contextMenuGroupId: "navigation",
       contextMenuOrder: 1.5,
       run: (ed) => {
-        const selection = ed.getSelection();
-        const selectedText = selection && !selection.isEmpty()
-          ? ed.getModel()?.getValueInRange(selection)
-          : undefined;
-        const text = (selectedText || ed.getValue()).trim();
+        const text = getEditorTextOrSelection(ed);
         if (!text) return;
         const queries = splitQueries(text);
         if (queries.length > 1) {
@@ -1739,19 +1684,19 @@ export const Editor = () => {
       contextMenuGroupId: "navigation",
       contextMenuOrder: 1.6,
       run: (ed) => {
-        const selection = ed.getSelection();
-        const selectedText = selection && !selection.isEmpty()
-          ? ed.getModel()?.getValueInRange(selection)
-          : undefined;
-        const text = (selectedText || ed.getValue()).trim();
-        if (!text) return;
-        const explainable = getExplainableQueries(text);
-        if (explainable.length === 0) {
-          openExplainForQueryRef.current(text);
-        } else if (explainable.length === 1) {
-          openExplainForQueryRef.current(explainable[0].query);
-        } else {
-          openExplainForQueryRef.current(explainable[0].query);
+        const target = resolveExplainTarget(getEditorTextOrSelection(ed));
+        switch (target.kind) {
+          case "none":
+            return;
+          case "fallback":
+          case "single":
+            openExplainForQueryRef.current(target.query);
+            return;
+          case "choose":
+            // Existing behavior of this action: auto-pick the first explainable
+            // statement instead of prompting (handleExplainButton prompts).
+            openExplainForQueryRef.current(target.choices[0].query);
+            return;
         }
       },
     });
@@ -1980,19 +1925,8 @@ export const Editor = () => {
       if (activeTab?.type !== "query_builder" && activeTab) {
         const editor = editorsRef.current[activeTab.id];
         if (editor) {
-          const selection = editor.getSelection();
-          const selectedText = selection
-            ? editor.getModel()?.getValueInRange(selection)
-            : undefined;
-
-          if (selectedText && selection && !selection.isEmpty()) {
-            const queries = splitQueries(selectedText);
-            setSelectableQueries(queries);
-          } else {
-            const text = editor.getValue();
-            const queries = splitQueries(text);
-            setSelectableQueries(queries);
-          }
+          const source = getEditorSelectionText(editor) ?? editor.getValue();
+          setSelectableQueries(splitQueries(source));
         } else if (activeTab.query?.trim()) {
           // Fallback: use saved query when editor ref is not available
           const queries = splitQueries(activeTab.query);
