@@ -90,7 +90,6 @@ import {
 import { formatDuration } from "../utils/formatTime";
 import { SqlEditorWrapper } from "../components/ui/SqlEditorWrapper";
 import { NotebookView } from "../components/notebook/NotebookView";
-import { extractSqlFromCells } from "../utils/notebook";
 import { createNotebook } from "../utils/notebookStore";
 import { registerSqlAutocomplete } from "../utils/autocomplete";
 import { type OnMount, type Monaco } from "@monaco-editor/react";
@@ -114,6 +113,7 @@ import type {
 import { buildForeignKeyFilterClause } from "../utils/foreignKeys";
 import { resolveNextTabId, isFocusedPane } from "../utils/tabScroll";
 import { useTabScroll } from "../hooks/useTabScroll";
+import { useTabContextMenu } from "../hooks/useTabContextMenu";
 import { toggleSortClause } from "../utils/sortClause";
 import { composeWindowTitle } from "../utils/windowTitle";
 import {
@@ -185,12 +185,6 @@ export const Editor = () => {
 
   const driverReadonly = isReadonly(activeCapabilities);
 
-  const [tabContextMenu, setTabContextMenu] = useState<{
-    x: number;
-    y: number;
-    tabId: string;
-  } | null>(null);
-
   const [errorModal, setErrorModal] = useState<{
     isOpen: boolean;
     message: string;
@@ -220,47 +214,6 @@ export const Editor = () => {
       unlisten.then((f) => f());
     };
   }, []);
-
-  const handleTabContextMenu = (e: React.MouseEvent, tabId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setTabContextMenu({ x: e.clientX, y: e.clientY, tabId });
-  };
-
-  const handleConvertToConsole = useCallback(
-    (tabId: string) => {
-      const tab = tabsRef.current.find((t) => t.id === tabId);
-      if (!tab) return;
-
-      // Notebook: extract all SQL cells
-      if (tab.type === "notebook" && tab.notebookState) {
-        const allSql = extractSqlFromCells(tab.notebookState.cells);
-        addTab({
-          type: "console",
-          title: `Console - ${tab.title}`,
-          query: allSql,
-          connectionId: tab.connectionId,
-        });
-        return;
-      }
-
-      const effectiveSchema =
-        activeCapabilities?.schemas === true ? tab.schema : undefined;
-      const tabForQuery = { ...tab, schema: effectiveSchema };
-      const query =
-        tab.type === "table" && tab.activeTable
-          ? reconstructTableQuery(tabForQuery, activeDriver ?? undefined)
-          : tab.query;
-
-      addTab({
-        type: "console",
-        title: `Console - ${tab.title}`,
-        query: query,
-        connectionId: tab.connectionId,
-      });
-    },
-    [addTab, activeDriver, activeCapabilities?.schemas],
-  );
 
   const [saveQueryModal, setSaveQueryModal] = useState<{
     isOpen: boolean;
@@ -386,6 +339,18 @@ export const Editor = () => {
   const runQueryRef = useRef<typeof runQuery>(null!);
   const runMultipleQueriesRef = useRef<typeof runMultipleQueries>(null!);
   const openExplainForQueryRef = useRef<(query: string) => void>(null!);
+  const {
+    tabContextMenu,
+    openTabContextMenu,
+    closeTabContextMenu,
+    convertToConsole,
+  } = useTabContextMenu({
+    tabsRef,
+    addTab,
+    activeDriver,
+    schemasEnabled: activeCapabilities?.schemas === true,
+  });
+
   const {
     tabScrollRef,
     canScrollLeft,
@@ -1876,7 +1841,7 @@ export const Editor = () => {
             <div
               key={tab.id}
               onClick={() => setActiveTabId(tab.id)}
-              onContextMenu={(e) => handleTabContextMenu(e, tab.id)}
+              onContextMenu={(e) => openTabContextMenu(e, tab.id)}
               onAuxClick={(e) => {
                 if (e.button === 1) {
                   e.preventDefault();
@@ -2846,7 +2811,7 @@ export const Editor = () => {
         <ContextMenu
           x={tabContextMenu.x}
           y={tabContextMenu.y}
-          onClose={() => setTabContextMenu(null)}
+          onClose={closeTabContextMenu}
           items={[
             ...(tabs.find((t) => t.id === tabContextMenu.tabId)?.type !==
             "console"
@@ -2854,7 +2819,7 @@ export const Editor = () => {
                   {
                     label: t("editor.convertToConsole"),
                     icon: FileCode,
-                    action: () => handleConvertToConsole(tabContextMenu.tabId),
+                    action: () => convertToConsole(tabContextMenu.tabId),
                   },
                 ]
               : []),
