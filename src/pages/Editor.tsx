@@ -4,21 +4,9 @@ import { useTranslation } from "react-i18next";
 import { reconstructTableQuery } from "../utils/editor";
 import { isMultiDatabaseCapable } from "../utils/database";
 import { isReadonly } from "../utils/driverCapabilities";
-import { generateTempId, initializeNewRow } from "../utils/pendingInsertions";
 import {
-  addMultiplePendingDeletions,
-  addPendingDeletion,
-  buildDuplicateInsertion,
-  cleanupSubmittedPending,
-  computeDeletionsForSelection,
-  computeSubmitOperations,
   hasAnyPendingChanges,
-  removePendingDeletion,
-  removePendingInsertion,
-  rollbackPendingForSelection,
   selectionHasPendingChanges,
-  togglePendingChange,
-  updatePendingInsertionField,
 } from "../utils/pendingChanges";
 import { AiQueryModal } from "../components/modals/AiQueryModal";
 import { AiExplainModal } from "../components/modals/AiExplainModal";
@@ -111,12 +99,12 @@ import { useTabScroll } from "../hooks/useTabScroll";
 import { useTabContextMenu } from "../hooks/useTabContextMenu";
 import { useExplainFlow } from "../hooks/useExplainFlow";
 import { useExportFlow } from "../hooks/useExportFlow";
+import { usePendingRowOps } from "../hooks/usePendingRowOps";
 import { toggleSortClause } from "../utils/sortClause";
 import { composeWindowTitle } from "../utils/windowTitle";
 import {
   deriveColumnMetadata,
   emptyColumnMetadata,
-  fillMissingColumnMetadata,
 } from "../utils/columnMetadata";
 import {
   getEditorSelectionText,
@@ -1110,378 +1098,34 @@ const [saveQueryModal, setSaveQueryModal] = useState<{
     [activeTab, handleToolbarUpdate],
   );
 
-  const handlePendingChange = useCallback(
-    (pkVal: unknown, colName: string, value: unknown) => {
-      if (!activeTabIdRef.current) return;
-      const tabId = activeTabIdRef.current;
-      const currentTab = tabsRef.current.find((t) => t.id === tabId);
-      if (!currentTab) return;
-
-      updateTab(tabId, {
-        pendingChanges: togglePendingChange(
-          currentTab.pendingChanges,
-          pkVal,
-          colName,
-          value,
-        ),
-      });
-    },
-    [updateTab],
-  );
-
-  const handleSelectionChange = useCallback(
-    (indices: Set<number>) => {
-      if (!activeTabIdRef.current) return;
-      updateTab(activeTabIdRef.current, { selectedRows: Array.from(indices) });
-    },
-    [updateTab],
-  );
-
-  const handleDeleteRows = useCallback(() => {
-    if (
-      !activeTab ||
-      !activeTab.selectedRows ||
-      activeTab.selectedRows.length === 0
-    )
-      return;
-
-    const { pendingDeletions, pendingInsertions } =
-      computeDeletionsForSelection(activeTab);
-
-    updateActiveTab({
-      pendingDeletions,
-      pendingInsertions,
-      selectedRows: [],
-    });
-  }, [activeTab, updateActiveTab]);
-
-  const handlePendingInsertionChange = useCallback(
-    (tempId: string, colName: string, value: unknown) => {
-      if (!activeTabIdRef.current) return;
-      const tabId = activeTabIdRef.current;
-      const currentTab = tabsRef.current.find((t) => t.id === tabId);
-      if (!currentTab) return;
-
-      updateTab(tabId, {
-        pendingInsertions: updatePendingInsertionField(
-          currentTab.pendingInsertions,
-          tempId,
-          colName,
-          value,
-        ),
-      });
-    },
-    [updateTab],
-  );
-
-  const handleDiscardInsertion = useCallback(
-    (tempId: string) => {
-      if (!activeTabIdRef.current) return;
-      const tabId = activeTabIdRef.current;
-      const currentTab = tabsRef.current.find((t) => t.id === tabId);
-      if (!currentTab?.pendingInsertions) return;
-
-      updateTab(tabId, {
-        pendingInsertions: removePendingInsertion(
-          currentTab.pendingInsertions,
-          tempId,
-        ),
-      });
-    },
-    [updateTab],
-  );
-
-  const handleRevertDeletion = useCallback(
-    (pkVal: unknown) => {
-      if (!activeTabIdRef.current) return;
-      const tabId = activeTabIdRef.current;
-      const currentTab = tabsRef.current.find((t) => t.id === tabId);
-      if (!currentTab?.pendingDeletions) return;
-
-      updateTab(tabId, {
-        pendingDeletions: removePendingDeletion(
-          currentTab.pendingDeletions,
-          pkVal,
-        ),
-      });
-    },
-    [updateTab],
-  );
-
-  const handleMarkForDeletion = useCallback(
-    (pkVal: unknown) => {
-      if (!activeTabIdRef.current) return;
-      const tabId = activeTabIdRef.current;
-      const currentTab = tabsRef.current.find((t) => t.id === tabId);
-      if (!currentTab) return;
-
-      updateTab(tabId, {
-        pendingDeletions: addPendingDeletion(currentTab.pendingDeletions, pkVal),
-      });
-    },
-    [updateTab],
-  );
-
-  const handleMarkMultipleForDeletion = useCallback(
-    (pkVals: unknown[]) => {
-      if (!activeTabIdRef.current) return;
-      const tabId = activeTabIdRef.current;
-      const currentTab = tabsRef.current.find((t) => t.id === tabId);
-      if (!currentTab) return;
-
-      updateTab(tabId, {
-        pendingDeletions: addMultiplePendingDeletions(
-          currentTab.pendingDeletions,
-          pkVals,
-        ),
-      });
-    },
-    [updateTab],
-  );
-
-  const handleDuplicateRow = useCallback(
-    (rowData: Record<string, unknown>) => {
-      if (!activeTabIdRef.current) return;
-      const tabId = activeTabIdRef.current;
-      const currentTab = tabsRef.current.find((t) => t.id === tabId);
-      if (!currentTab) return;
-
-      const { pendingInsertions } = buildDuplicateInsertion(
-        rowData,
-        currentTab.autoIncrementColumns ?? [],
-        currentTab.pendingInsertions,
-        currentTab.result?.rows.length ?? 0,
-      );
-
-      updateTab(tabId, { pendingInsertions });
-    },
-    [updateTab],
-  );
-
-  const handleNewRow = useCallback(async () => {
-    if (
-      !activeTabIdRef.current ||
-      !activeConnectionId ||
-      !activeTab?.activeTable
-    ) {
-      console.warn("Cannot create new row: missing required context", {
-        tabId: activeTabIdRef.current,
-        connectionId: activeConnectionId,
-        table: activeTab?.activeTable,
-      });
-      return;
-    }
-
-    try {
-      // Fetch table columns
-      const columns = await invoke<TableColumn[]>("get_columns", {
-        connectionId: activeConnectionId,
-        tableName: activeTab.activeTable,
-        ...(activeSchema ? { schema: activeSchema } : {}),
-      });
-
-      if (!columns || columns.length === 0) {
-        throw new Error("No columns found for table");
-      }
-
-      // Generate temp ID and initialize data
-      const tempId = generateTempId();
-      const data = initializeNewRow(columns);
-
-      const currentPendingInsertions = activeTab.pendingInsertions || {};
-      const existingRowCount = activeTab.result?.rows.length || 0;
-      const insertionCount = Object.keys(currentPendingInsertions).length;
-
-      // displayIndex will be calculated in DataGrid (existingRowCount + insertionIndex)
-      const displayIndex = existingRowCount + insertionCount;
-
-      const newPendingInsertions = {
-        ...currentPendingInsertions,
-        [tempId]: {
-          tempId,
-          data,
-          displayIndex,
-        },
-      };
-
-      const updates: Partial<Tab> = {
-        pendingInsertions: newPendingInsertions,
-      };
-
-      // If activeTab.result is missing (e.g. empty table initially), initialize it
-      // so DataGrid receives columns and can render the new row
-      if (!activeTab.result) {
-        updates.result = {
-          columns: columns.map((c) => c.name),
-          rows: [],
-          affected_rows: 0,
-          pagination: {
-            page: 1,
-            page_size: settings.resultPageSize || 100,
-            total_rows: null,
-            has_more: false,
-          },
-        };
-      } else if (
-        !activeTab.result.columns ||
-        activeTab.result.columns.length === 0
-      ) {
-        // If result exists but has no columns, update it with columns
-        updates.result = {
-          ...activeTab.result,
-          columns: columns.map((c) => c.name),
-        };
-      }
-
-      Object.assign(updates, fillMissingColumnMetadata(activeTab, columns));
-
-      updateTab(activeTabIdRef.current, updates);
-    } catch (err) {
-      console.error("Failed to create new row:", err);
-      showAlert(t("editor.failedCreateRow") + String(err), {
-        title: t("general.error"),
-        kind: "error",
-      });
-    }
-  }, [
-    activeConnectionId,
+  const {
+    handlePendingChange,
+    handleSelectionChange,
+    handleDeleteRows,
+    handlePendingInsertionChange,
+    handleDiscardInsertion,
+    handleRevertDeletion,
+    handleMarkForDeletion,
+    handleMarkMultipleForDeletion,
+    handleDuplicateRow,
+    handleNewRow,
+    handleSubmitChanges,
+    handleRollbackChanges,
+  } = usePendingRowOps({
     activeTab,
-    updateTab,
-    t,
-    settings.resultPageSize,
-    activeSchema,
-    showAlert,
-  ]);
-
-  const handleSubmitChanges = useCallback(async () => {
-    if (!activeTab || !activeTab.activeTable || !activeConnectionId) return;
-
-    const { activeTable, pkColumn, pendingInsertions } = activeTab;
-
-    let columns: TableColumn[] = [];
-    if (pendingInsertions && Object.keys(pendingInsertions).length > 0) {
-      try {
-        columns = await invoke<TableColumn[]>("get_columns", {
-          connectionId: activeConnectionId,
-          tableName: activeTable,
-          ...(activeSchema ? { schema: activeSchema } : {}),
-        });
-      } catch (err) {
-        console.error("Failed to process insertions:", err);
-        showAlert(t("editor.failedProcessInsertions") + String(err), {
-          title: t("common.error"),
-          kind: "error",
-        });
-        return;
-      }
-    }
-
-    const ops = computeSubmitOperations(activeTab, applyToAll, columns);
-    ops.invalidInsertions.forEach(({ tempId, errors }) =>
-      console.warn(`Skipping invalid insertion ${tempId}:`, errors),
-    );
-
-    if (
-      ops.updates.length === 0 &&
-      ops.deletions.length === 0 &&
-      ops.insertions.length === 0
-    )
-      return;
-
-    updateActiveTab({ isLoading: true });
-
-    try {
-      const promises = [];
-
-      const databaseParam =
-        isMultiDatabaseCapable(activeCapabilities) && activeTab?.schema
-          ? { database: activeTab.schema }
-          : {};
-
-      if (ops.deletions.length > 0) {
-        promises.push(
-          ...ops.deletions.map((pkVal) =>
-            invoke("delete_record", {
-              connectionId: activeConnectionId,
-              table: activeTable,
-              pkCol: pkColumn,
-              pkVal,
-              ...(activeSchema ? { schema: activeSchema } : {}),
-              ...databaseParam,
-            }),
-          ),
-        );
-      }
-
-      if (ops.updates.length > 0) {
-        promises.push(
-          ...ops.updates.map((u) =>
-            invoke("update_record", {
-              connectionId: activeConnectionId,
-              table: activeTable,
-              pkCol: pkColumn,
-              pkVal: u.pkVal,
-              colName: u.colName,
-              newVal: u.newVal,
-              ...(activeSchema ? { schema: activeSchema } : {}),
-              ...databaseParam,
-            }),
-          ),
-        );
-      }
-
-      if (ops.insertions.length > 0) {
-        promises.push(
-          ...ops.insertions.map((insertion) =>
-            invoke("insert_record", {
-              connectionId: activeConnectionId,
-              table: activeTable,
-              data: insertion.data,
-              ...(activeSchema ? { schema: activeSchema } : {}),
-              ...databaseParam,
-            }),
-          ),
-        );
-      }
-
-      await Promise.all(promises);
-
-      const remaining = cleanupSubmittedPending(
-        activeTab.pendingChanges,
-        activeTab.pendingDeletions,
-        activeTab.pendingInsertions,
-        ops,
-      );
-
-      runQuery(
-        activeTab.query,
-        activeTab.page,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        remaining,
-      );
-    } catch (e) {
-      console.error("Batch update failed", e);
-      updateActiveTab({ isLoading: false });
-      showAlert(t("dataGrid.updateFailed") + String(e), {
-        title: t("common.error"),
-        kind: "error",
-      });
-    }
-  }, [
-    activeTab,
+    activeTabIdRef,
+    tabsRef,
     activeConnectionId,
-    updateActiveTab,
-    runQuery,
-    t,
-    applyToAll,
     activeSchema,
     activeCapabilities,
+    updateTab,
+    updateActiveTab,
+    applyToAll,
+    runQuery,
     showAlert,
-  ]);
+    t,
+    resultPageSize: settings.resultPageSize ?? 100,
+  });
 
   const handleParamsSubmit = useCallback(
     (values: Record<string, string>) => {
@@ -1525,11 +1169,6 @@ const [saveQueryModal, setSaveQueryModal] = useState<{
       mode: "save",
     });
   }, [activeTab]);
-
-  const handleRollbackChanges = useCallback(() => {
-    if (!activeTab) return;
-    updateActiveTab(rollbackPendingForSelection(activeTab, applyToAll));
-  }, [activeTab, updateActiveTab, applyToAll]);
 
   const handleEditorMount = (
     editor: Parameters<OnMount>[0],
