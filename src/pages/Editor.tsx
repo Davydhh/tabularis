@@ -112,12 +112,8 @@ import type {
   ForeignKey,
 } from "../types/editor";
 import { buildForeignKeyFilterClause } from "../utils/foreignKeys";
-import {
-  getTabScrollState,
-  getAdjacentTabIndex,
-  resolveNextTabId,
-  isFocusedPane,
-} from "../utils/tabScroll";
+import { resolveNextTabId, isFocusedPane } from "../utils/tabScroll";
+import { useTabScroll } from "../hooks/useTabScroll";
 import { toggleSortClause } from "../utils/sortClause";
 import { composeWindowTitle } from "../utils/windowTitle";
 import {
@@ -390,49 +386,13 @@ export const Editor = () => {
   const runQueryRef = useRef<typeof runQuery>(null!);
   const runMultipleQueriesRef = useRef<typeof runMultipleQueries>(null!);
   const openExplainForQueryRef = useRef<(query: string) => void>(null!);
-  const tabScrollRef = useRef<HTMLDivElement>(null);
-  const [canScrollLeft, setCanScrollLeft] = useState(false);
-  const [canScrollRight, setCanScrollRight] = useState(false);
-
-  useEffect(() => {
-    const el = tabScrollRef.current;
-    if (!el || !activeTabId) return;
-    const idx = tabs.findIndex((t) => t.id === activeTabId);
-    if (idx === -1) return;
-    const tabEl = el.children[idx] as HTMLElement | undefined;
-    tabEl?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-  }, [activeTabId, tabs]);
-
-  const updateScrollArrows = useCallback(() => {
-    const el = tabScrollRef.current;
-    if (!el) return;
-    const { canScrollLeft, canScrollRight } = getTabScrollState(el);
-    setCanScrollLeft(canScrollLeft);
-    setCanScrollRight(canScrollRight);
-  }, []);
-
-  const scrollTabs = useCallback(
-    (direction: "left" | "right") => {
-      const currentIndex = tabs.findIndex((t) => t.id === activeTabId);
-      const targetIndex = getAdjacentTabIndex(
-        currentIndex,
-        tabs.length,
-        direction,
-      );
-      if (targetIndex === null) return;
-      const targetTab = tabs[targetIndex];
-      setActiveTabId(targetTab.id);
-      const el = tabScrollRef.current;
-      if (!el) return;
-      const tabEl = el.children[targetIndex] as HTMLElement | undefined;
-      tabEl?.scrollIntoView({
-        behavior: "smooth",
-        block: "nearest",
-        inline: "nearest",
-      });
-    },
-    [tabs, activeTabId, setActiveTabId],
-  );
+  const {
+    tabScrollRef,
+    canScrollLeft,
+    canScrollRight,
+    updateScrollArrows,
+    scrollTabs,
+  } = useTabScroll({ tabs, activeTabId, setActiveTabId });
   const processingRef = useRef<string | null>(null);
   const pendingExecutionsRef = useRef<
     Record<string, { sql: string; page: number }>
@@ -452,10 +412,6 @@ export const Editor = () => {
     tabsRef.current = tabs;
     activeTabIdRef.current = activeTabId;
   }, [tabs, activeTabId]);
-
-  useEffect(() => {
-    updateScrollArrows();
-  }, [tabs, updateScrollArrows]);
 
   const fetchPkColumn = useCallback(
     async (table: string, tabId?: string, tabSchema?: string) => {
