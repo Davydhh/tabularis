@@ -130,18 +130,21 @@ import {
   getEditorTextOrSelection,
 } from "../utils/monacoEditor";
 import { resolveExplainTarget } from "../utils/explainRouting";
-import clsx from "clsx";
+import {
+  buildNavStateKey,
+  buildTabPayloadFromNavState,
+  navTargetsOtherConnection,
+  resolveNavTabTitle,
+  type EditorNavState,
+} from "../utils/editorNavigation";
+import { computeResizeHeight } from "../utils/editorResize";
 
-interface EditorState {
-  initialQuery?: string;
-  tableName?: string;
-  queryName?: string;
-  preventAutoRun?: boolean;
-  readOnly?: boolean;
-  schema?: string;
-  targetConnectionId?: string;
-  title?: string;
-}
+const RESIZE_BOUNDS = {
+  offsetTop: 50,
+  minHeight: 100,
+  bottomMargin: 150,
+};
+import clsx from "clsx";
 
 interface ExportProgress {
   rows_processed: number;
@@ -1725,67 +1728,46 @@ export const Editor = () => {
   }, [monacoInstance, activeConnectionId, tables, activeSchema, activeCapabilities, schemaDataMap, databaseDataMap, isMultiDb, selectedDatabases]);
 
   useEffect(() => {
-    const state = location.state as EditorState;
-    if (activeConnectionId) {
-      if (state?.initialQuery !== undefined) {
-        if (
-          state.targetConnectionId &&
-          state.targetConnectionId !== activeConnectionId
-        )
-          return;
+    const state = location.state as EditorNavState | null;
+    if (!activeConnectionId || state?.initialQuery === undefined) return;
+    if (navTargetsOtherConnection(state, activeConnectionId)) return;
 
-        const queryKey = `${state.initialQuery}-${state.tableName}-${state.queryName}-${state.schema}-${state.title}`;
+    const navKey = buildNavStateKey(state);
+    if (processingRef.current === navKey) {
+      // If re-navigating to the same definition with readOnly, patch any
+      // existing tab that was opened without the flag (e.g. before the fix).
+      if (state.readOnly) {
+        const title = resolveNavTabTitle(state, "");
+        const existing = tabsRef.current.find(
+          (tb) =>
+            tb.connectionId === activeConnectionId && tb.title === title,
+        );
+        if (existing) updateTab(existing.id, { readOnly: true });
+      }
+      return;
+    }
+    processingRef.current = navKey;
 
-        if (processingRef.current === queryKey) {
-          // If re-navigating to the same definition with readOnly, patch any
-          // existing tab that was opened without the flag (e.g. before the fix).
-          if (state.readOnly) {
-            const title = state.queryName || state.tableName || "";
-            const existing = tabsRef.current.find(
-              (t) => t.connectionId === activeConnectionId && t.title === title,
-            );
-            if (existing) updateTab(existing.id, { readOnly: true });
-          }
-          return;
-        }
-        processingRef.current = queryKey;
+    const tabId = addTab(
+      buildTabPayloadFromNavState(state, t("sidebar.newConsole")),
+    );
 
-        const {
-          initialQuery: sql,
-          tableName: table,
-          queryName,
-          preventAutoRun,
-          readOnly: navReadOnly,
-          schema: navSchema,
-          title: navTitle,
-        } = state;
-        const tabId = addTab({
-          type: table ? "table" : "console",
-          title: navTitle || queryName || table || t("sidebar.newConsole"),
-          query: sql,
-          activeTable: table,
-          schema: navSchema,
-          readOnly: navReadOnly,
-        });
-
-        if (tabId && !preventAutoRun) {
-          // Queue execution only if not prevented
-          pendingExecutionsRef.current[tabId] = { sql: sql || "", page: 1 };
-
-          // Try immediate execution if tab exists (reused)
-          const existingTab = tabsRef.current.find((t) => t.id === tabId);
-          if (existingTab) {
-            runQuery(sql, 1, tabId);
-            delete pendingExecutionsRef.current[tabId];
-          }
-        }
-
-        navigate(location.pathname, { replace: true, state: {} });
-        setTimeout(() => {
-          processingRef.current = null;
-        }, 500);
+    if (tabId && !state.preventAutoRun) {
+      pendingExecutionsRef.current[tabId] = {
+        sql: state.initialQuery ?? "",
+        page: 1,
+      };
+      const existingTab = tabsRef.current.find((tb) => tb.id === tabId);
+      if (existingTab) {
+        runQuery(state.initialQuery, 1, tabId);
+        delete pendingExecutionsRef.current[tabId];
       }
     }
+
+    navigate(location.pathname, { replace: true, state: {} });
+    setTimeout(() => {
+      processingRef.current = null;
+    }, 500);
   }, [
     location.state,
     location.pathname,
@@ -1823,16 +1805,19 @@ export const Editor = () => {
 
     const handleResize = (e: MouseEvent) => {
       if (!isDragging.current) return;
-      const newHeight = e.clientY - 50;
-      if (newHeight > 100 && newHeight < window.innerHeight - 150) {
-        editorHeightRef.current = newHeight;
-        if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        rafRef.current = requestAnimationFrame(() => {
-          panels.forEach((el) => {
-            el.style.height = `${newHeight}px`;
-          });
+      const newHeight = computeResizeHeight(
+        e.clientY,
+        window.innerHeight,
+        RESIZE_BOUNDS,
+      );
+      if (newHeight === null) return;
+      editorHeightRef.current = newHeight;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => {
+        panels.forEach((el) => {
+          el.style.height = `${newHeight}px`;
         });
-      }
+      });
     };
     const stopResize = () => {
       isDragging.current = false;
