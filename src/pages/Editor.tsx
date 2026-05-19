@@ -4,12 +4,22 @@ import { useTranslation } from "react-i18next";
 import { reconstructTableQuery } from "../utils/editor";
 import { isMultiDatabaseCapable } from "../utils/database";
 import { isReadonly } from "../utils/driverCapabilities";
+import { generateTempId, initializeNewRow } from "../utils/pendingInsertions";
 import {
-  generateTempId,
-  initializeNewRow,
-  validatePendingInsertion,
-  insertionToBackendData,
-} from "../utils/pendingInsertions";
+  addMultiplePendingDeletions,
+  addPendingDeletion,
+  buildDuplicateInsertion,
+  cleanupSubmittedPending,
+  computeDeletionsForSelection,
+  computeSubmitOperations,
+  hasAnyPendingChanges,
+  removePendingDeletion,
+  removePendingInsertion,
+  rollbackPendingForSelection,
+  selectionHasPendingChanges,
+  togglePendingChange,
+  updatePendingInsertionField,
+} from "../utils/pendingChanges";
 import { AiQueryModal } from "../components/modals/AiQueryModal";
 import { AiExplainModal } from "../components/modals/AiExplainModal";
 import { AiDropdownButton } from "../components/ui/AiDropdownButton";
@@ -108,6 +118,8 @@ import {
   resolveNextTabId,
   isFocusedPane,
 } from "../utils/tabScroll";
+import { toggleSortClause } from "../utils/sortClause";
+import { composeWindowTitle } from "../utils/windowTitle";
 import clsx from "clsx";
 
 interface EditorState {
@@ -320,29 +332,18 @@ export const Editor = () => {
 
   // Update window title when the active tab changes
   useEffect(() => {
-    const updateTitle = async () => {
-      try {
-        let title = "tabularis";
-        if (activeConnectionName && activeDatabaseName) {
-          const schemaSuffix =
-            activeSchema && activeCapabilities?.schemas === true
-              ? `/${activeSchema}`
-              : "";
-          let dbDisplay: string;
-          if (isMultiDb) {
-            dbDisplay =
-              activeTab?.schema ?? selectedDatabases[0] ?? activeDatabaseName;
-          } else {
-            dbDisplay = activeDatabaseName;
-          }
-          title = `tabularis - ${activeConnectionName} (${dbDisplay}${schemaSuffix})`;
-        }
-        await invoke("set_window_title", { title });
-      } catch (e) {
-        console.error("Failed to update window title", e);
-      }
-    };
-    updateTitle();
+    const title = composeWindowTitle({
+      connectionName: activeConnectionName,
+      databaseName: activeDatabaseName,
+      schema: activeSchema,
+      schemasEnabled: activeCapabilities?.schemas === true,
+      isMultiDb,
+      activeTabSchema: activeTab?.schema,
+      firstSelectedDatabase: selectedDatabases[0],
+    });
+    invoke("set_window_title", { title }).catch((e) =>
+      console.error("Failed to update window title", e),
+    );
   }, [
     activeTabId,
     activeTab?.schema,
@@ -433,61 +434,15 @@ export const Editor = () => {
     Record<string, { sql: string; page: number }>
   >({});
 
-  const selectionHasPending = useMemo(() => {
-    if (!activeTab) return false;
-    const {
-      pendingChanges,
-      pendingDeletions,
-      pendingInsertions,
-      selectedRows,
-      result,
-      pkColumn,
-    } = activeTab;
-    const hasGlobalPending =
-      (pendingChanges && Object.keys(pendingChanges).length > 0) ||
-      (pendingDeletions && Object.keys(pendingDeletions).length > 0) ||
-      (pendingInsertions && Object.keys(pendingInsertions).length > 0);
+  const selectionHasPending = useMemo(
+    () => (activeTab ? selectionHasPendingChanges(activeTab) : false),
+    [activeTab],
+  );
 
-    if (!selectedRows || selectedRows.length === 0) return hasGlobalPending;
-
-    const existingRowCount = result?.rows.length || 0;
-
-    return selectedRows.some((rowIndex) => {
-      // Check if this is an insertion row (displayIndex >= existingRowCount)
-      if (rowIndex >= existingRowCount) {
-        // This is an insertion row
-        return pendingInsertions && Object.keys(pendingInsertions).length > 0;
-      }
-
-      // This is an existing row - check for changes/deletions
-      if (!result || !pkColumn) return false;
-      const pkIndex = result.columns.indexOf(pkColumn);
-      if (pkIndex === -1) return false;
-
-      const row = result.rows[rowIndex];
-      if (!row) return false;
-      const pkVal = String(row[pkIndex]);
-      return (
-        (pendingChanges && pendingChanges[pkVal]) ||
-        (pendingDeletions && pendingDeletions[pkVal])
-      );
-    });
-  }, [activeTab]);
-
-  const hasPendingChanges = useMemo(() => {
-    return (
-      (activeTab?.pendingChanges &&
-        Object.keys(activeTab.pendingChanges).length > 0) ||
-      (activeTab?.pendingDeletions &&
-        Object.keys(activeTab.pendingDeletions).length > 0) ||
-      (activeTab?.pendingInsertions &&
-        Object.keys(activeTab.pendingInsertions).length > 0)
-    );
-  }, [
-    activeTab?.pendingChanges,
-    activeTab?.pendingDeletions,
-    activeTab?.pendingInsertions,
-  ]);
+  const hasPendingChanges = useMemo(
+    () => (activeTab ? hasAnyPendingChanges(activeTab) : false),
+    [activeTab],
+  );
 
   useEffect(() => {
     tabsRef.current = tabs;
@@ -1287,29 +1242,7 @@ export const Editor = () => {
   const handleSort = useCallback(
     (colName: string) => {
       if (!activeTab) return;
-
-      const currentSort = activeTab.sortClause || "";
-      const parts = currentSort.trim().split(/\s+/);
-
-      let newSort = "";
-
-      // Check if we are currently sorting by this column
-      if (parts[0] === colName && parts.length <= 2) {
-        // Toggle logic
-        const currentDir = parts[1]?.toUpperCase();
-
-        if (!currentDir || currentDir === "ASC") {
-          // ASC -> DESC
-          newSort = `${colName} DESC`;
-        } else {
-          // DESC -> None (Clear)
-          newSort = "";
-        }
-      } else {
-        // New column -> ASC
-        newSort = `${colName} ASC`;
-      }
-
+      const newSort = toggleSortClause(activeTab.sortClause || "", colName);
       handleToolbarUpdate(
         activeTab.filterClause || "",
         newSort,
@@ -1323,41 +1256,17 @@ export const Editor = () => {
     (pkVal: unknown, colName: string, value: unknown) => {
       if (!activeTabIdRef.current) return;
       const tabId = activeTabIdRef.current;
-
       const currentTab = tabsRef.current.find((t) => t.id === tabId);
       if (!currentTab) return;
 
-      const pkKey = String(pkVal);
-      const currentPending = currentTab.pendingChanges || {};
-      const rowEntry = currentPending[pkKey] || {
-        pkOriginalValue: pkVal,
-        changes: {},
-      };
-
-      // Create new changes object
-      const newChanges = { ...rowEntry.changes };
-
-      if (value === undefined) {
-        // Remove change
-        delete newChanges[colName];
-      } else {
-        // Update change
-        newChanges[colName] = value;
-      }
-
-      const newPending = { ...currentPending };
-
-      // If no changes left for this row, remove the row entry
-      if (Object.keys(newChanges).length === 0) {
-        delete newPending[pkKey];
-      } else {
-        newPending[pkKey] = {
-          ...rowEntry,
-          changes: newChanges,
-        };
-      }
-
-      updateTab(tabId, { pendingChanges: newPending });
+      updateTab(tabId, {
+        pendingChanges: togglePendingChange(
+          currentTab.pendingChanges,
+          pkVal,
+          colName,
+          value,
+        ),
+      });
     },
     [updateTab],
   );
@@ -1378,45 +1287,12 @@ export const Editor = () => {
     )
       return;
 
-    const existingRowCount = activeTab.result?.rows.length || 0;
-    const currentPendingInsertions = activeTab.pendingInsertions || {};
-    const currentPendingDeletions = activeTab.pendingDeletions || {};
-
-    const newPendingDeletions = { ...currentPendingDeletions };
-    const newPendingInsertions = { ...currentPendingInsertions };
-
-    // Separate selected rows into existing rows and new rows
-    const insertionTempIds = Object.keys(currentPendingInsertions);
-
-    activeTab.selectedRows.forEach((rowIndex) => {
-      if (rowIndex < existingRowCount) {
-        // Existing row - add to pending deletions
-        if (activeTab.result && activeTab.pkColumn) {
-          const pkIndex = activeTab.result.columns.indexOf(activeTab.pkColumn);
-          if (pkIndex !== -1) {
-            const row = activeTab.result.rows[rowIndex];
-            if (row) {
-              const pkVal = row[pkIndex];
-              newPendingDeletions[String(pkVal)] = pkVal;
-            }
-          }
-        }
-      } else {
-        // New row (insertion) - remove directly from pendingInsertions
-        const insertionArrayIndex = rowIndex - existingRowCount;
-        if (
-          insertionArrayIndex >= 0 &&
-          insertionArrayIndex < insertionTempIds.length
-        ) {
-          const tempId = insertionTempIds[insertionArrayIndex];
-          delete newPendingInsertions[tempId];
-        }
-      }
-    });
+    const { pendingDeletions, pendingInsertions } =
+      computeDeletionsForSelection(activeTab);
 
     updateActiveTab({
-      pendingDeletions: newPendingDeletions,
-      pendingInsertions: newPendingInsertions,
+      pendingDeletions,
+      pendingInsertions,
       selectedRows: [],
     });
   }, [activeTab, updateActiveTab]);
@@ -1425,30 +1301,17 @@ export const Editor = () => {
     (tempId: string, colName: string, value: unknown) => {
       if (!activeTabIdRef.current) return;
       const tabId = activeTabIdRef.current;
-
       const currentTab = tabsRef.current.find((t) => t.id === tabId);
       if (!currentTab) return;
 
-      const currentPendingInsertions = currentTab.pendingInsertions || {};
-      const insertion = currentPendingInsertions[tempId];
-      if (!insertion) return;
-
-      const newData = { ...insertion.data };
-      if (value === undefined) {
-        delete newData[colName];
-      } else {
-        newData[colName] = value;
-      }
-
-      const newPendingInsertions = {
-        ...currentPendingInsertions,
-        [tempId]: {
-          ...insertion,
-          data: newData,
-        },
-      };
-
-      updateTab(tabId, { pendingInsertions: newPendingInsertions });
+      updateTab(tabId, {
+        pendingInsertions: updatePendingInsertionField(
+          currentTab.pendingInsertions,
+          tempId,
+          colName,
+          value,
+        ),
+      });
     },
     [updateTab],
   );
@@ -1460,10 +1323,12 @@ export const Editor = () => {
       const currentTab = tabsRef.current.find((t) => t.id === tabId);
       if (!currentTab?.pendingInsertions) return;
 
-      const newPendingInsertions = { ...currentTab.pendingInsertions };
-      delete newPendingInsertions[tempId];
-
-      updateTab(tabId, { pendingInsertions: newPendingInsertions });
+      updateTab(tabId, {
+        pendingInsertions: removePendingInsertion(
+          currentTab.pendingInsertions,
+          tempId,
+        ),
+      });
     },
     [updateTab],
   );
@@ -1475,15 +1340,11 @@ export const Editor = () => {
       const currentTab = tabsRef.current.find((t) => t.id === tabId);
       if (!currentTab?.pendingDeletions) return;
 
-      const pkKey = String(pkVal);
-      const newPendingDeletions = { ...currentTab.pendingDeletions };
-      delete newPendingDeletions[pkKey];
-
       updateTab(tabId, {
-        pendingDeletions:
-          Object.keys(newPendingDeletions).length > 0
-            ? newPendingDeletions
-            : undefined,
+        pendingDeletions: removePendingDeletion(
+          currentTab.pendingDeletions,
+          pkVal,
+        ),
       });
     },
     [updateTab],
@@ -1496,14 +1357,9 @@ export const Editor = () => {
       const currentTab = tabsRef.current.find((t) => t.id === tabId);
       if (!currentTab) return;
 
-      const pkKey = String(pkVal);
-      const currentPendingDeletions = currentTab.pendingDeletions || {};
-      const newPendingDeletions = {
-        ...currentPendingDeletions,
-        [pkKey]: pkVal,
-      };
-
-      updateTab(tabId, { pendingDeletions: newPendingDeletions });
+      updateTab(tabId, {
+        pendingDeletions: addPendingDeletion(currentTab.pendingDeletions, pkVal),
+      });
     },
     [updateTab],
   );
@@ -1515,12 +1371,12 @@ export const Editor = () => {
       const currentTab = tabsRef.current.find((t) => t.id === tabId);
       if (!currentTab) return;
 
-      const newPendingDeletions = { ...(currentTab.pendingDeletions || {}) };
-      for (const pkVal of pkVals) {
-        newPendingDeletions[String(pkVal)] = pkVal;
-      }
-
-      updateTab(tabId, { pendingDeletions: newPendingDeletions });
+      updateTab(tabId, {
+        pendingDeletions: addMultiplePendingDeletions(
+          currentTab.pendingDeletions,
+          pkVals,
+        ),
+      });
     },
     [updateTab],
   );
@@ -1532,24 +1388,14 @@ export const Editor = () => {
       const currentTab = tabsRef.current.find((t) => t.id === tabId);
       if (!currentTab) return;
 
-      const autoIncrementCols = currentTab.autoIncrementColumns ?? [];
-      const data: Record<string, unknown> = { ...rowData };
-      autoIncrementCols.forEach((col) => {
-        data[col] = null;
-      });
+      const { pendingInsertions } = buildDuplicateInsertion(
+        rowData,
+        currentTab.autoIncrementColumns ?? [],
+        currentTab.pendingInsertions,
+        currentTab.result?.rows.length ?? 0,
+      );
 
-      const tempId = generateTempId();
-      const currentPendingInsertions = currentTab.pendingInsertions || {};
-      const existingRowCount = currentTab.result?.rows.length || 0;
-      const insertionCount = Object.keys(currentPendingInsertions).length;
-      const displayIndex = existingRowCount + insertionCount;
-
-      updateTab(tabId, {
-        pendingInsertions: {
-          ...currentPendingInsertions,
-          [tempId]: { tempId, data, displayIndex },
-        },
-      });
+      updateTab(tabId, { pendingInsertions });
     },
     [updateTab],
   );
@@ -1685,105 +1531,16 @@ export const Editor = () => {
   const handleSubmitChanges = useCallback(async () => {
     if (!activeTab || !activeTab.activeTable || !activeConnectionId) return;
 
-    // pkColumn is required for updates/deletions but not for insertions-only
-    const hasPkColumn = !!activeTab.pkColumn;
+    const { activeTable, pkColumn, pendingInsertions } = activeTab;
 
-    const {
-      pendingChanges,
-      pendingDeletions,
-      pendingInsertions,
-      activeTable,
-      pkColumn,
-      selectedRows,
-    } = activeTab;
-    const updates: { pkVal: unknown; colName: string; newVal: unknown }[] = [];
-    const deletions: unknown[] = [];
-    const insertions: { tempId: string; data: Record<string, unknown> }[] = [];
-
-    // Filter pending changes by selected rows IF there is a selection AND applyToAll is false
-    const hasSelection = !applyToAll && selectedRows && selectedRows.length > 0;
-    const selectedPkSet = new Set<string>();
-
-    if (hasSelection && activeTab.result && hasPkColumn && pkColumn) {
-      const pkIndex = activeTab.result.columns.indexOf(pkColumn);
-      if (pkIndex !== -1) {
-        selectedRows.forEach((rowIndex) => {
-          const row = activeTab.result!.rows[rowIndex];
-          if (row) selectedPkSet.add(String(row[pkIndex]));
-        });
-      }
-    }
-
-    if (hasPkColumn && pkColumn && pendingChanges) {
-      for (const [pkKey, rowData] of Object.entries(pendingChanges)) {
-        // Apply filter if selection exists (and applyToAll is false)
-        if (hasSelection && !selectedPkSet.has(pkKey)) continue;
-
-        const { pkOriginalValue, changes } = rowData;
-        for (const [colName, newVal] of Object.entries(changes)) {
-          updates.push({ pkVal: pkOriginalValue, colName, newVal });
-        }
-      }
-    }
-
-    if (hasPkColumn && pkColumn && pendingDeletions) {
-      for (const [pkKey, pkVal] of Object.entries(pendingDeletions)) {
-        // Apply filter if selection exists (and applyToAll is false)
-        if (hasSelection && !selectedPkSet.has(pkKey)) continue;
-        deletions.push(pkVal);
-      }
-    }
-
-    // Process insertions
+    let columns: TableColumn[] = [];
     if (pendingInsertions && Object.keys(pendingInsertions).length > 0) {
       try {
-        // Fetch columns for validation
-        const columns = await invoke<TableColumn[]>("get_columns", {
+        columns = await invoke<TableColumn[]>("get_columns", {
           connectionId: activeConnectionId,
           tableName: activeTable,
           ...(activeSchema ? { schema: activeSchema } : {}),
         });
-
-        const selectedDisplayIndices = new Set<number>();
-
-        if (hasSelection && selectedRows) {
-          // Convert selectedRows to displayIndices
-          // Insertion rows are displayed AFTER existing rows
-          selectedRows.forEach((rowIndex) => {
-            selectedDisplayIndices.add(rowIndex);
-          });
-        }
-
-        // Filter and validate insertions
-        // Insertion rows have displayIndex = existingRowCount + insertionIndex
-        const existingRowCount = activeTab.result?.rows.length || 0;
-        let insertionIndex = 0;
-        for (const [tempId, insertion] of Object.entries(pendingInsertions)) {
-          // Check if this insertion is selected (if filtering by selection)
-          const insertionDisplayIndex = existingRowCount + insertionIndex;
-          if (
-            hasSelection &&
-            !selectedDisplayIndices.has(insertionDisplayIndex)
-          ) {
-            insertionIndex++;
-            continue;
-          }
-
-          // Validate insertion
-          const errors = validatePendingInsertion(insertion, columns);
-          if (Object.keys(errors).length > 0) {
-            // Skip invalid insertions (optionally show error to user)
-            console.warn(`Skipping invalid insertion ${tempId}:`, errors);
-            insertionIndex++;
-            continue;
-          }
-
-          // Convert to backend format (auto-increment columns are automatically excluded)
-          const backendData = insertionToBackendData(insertion, columns);
-
-          insertions.push({ tempId, data: backendData });
-          insertionIndex++;
-        }
       } catch (err) {
         console.error("Failed to process insertions:", err);
         showAlert(t("editor.failedProcessInsertions") + String(err), {
@@ -1794,10 +1551,15 @@ export const Editor = () => {
       }
     }
 
+    const ops = computeSubmitOperations(activeTab, applyToAll, columns);
+    ops.invalidInsertions.forEach(({ tempId, errors }) =>
+      console.warn(`Skipping invalid insertion ${tempId}:`, errors),
+    );
+
     if (
-      updates.length === 0 &&
-      deletions.length === 0 &&
-      insertions.length === 0
+      ops.updates.length === 0 &&
+      ops.deletions.length === 0 &&
+      ops.insertions.length === 0
     )
       return;
 
@@ -1811,10 +1573,9 @@ export const Editor = () => {
           ? { database: activeTab.schema }
           : {};
 
-      // Deletions
-      if (deletions.length > 0) {
+      if (ops.deletions.length > 0) {
         promises.push(
-          ...deletions.map((pkVal) =>
+          ...ops.deletions.map((pkVal) =>
             invoke("delete_record", {
               connectionId: activeConnectionId,
               table: activeTable,
@@ -1827,10 +1588,9 @@ export const Editor = () => {
         );
       }
 
-      // Updates
-      if (updates.length > 0) {
+      if (ops.updates.length > 0) {
         promises.push(
-          ...updates.map((u) =>
+          ...ops.updates.map((u) =>
             invoke("update_record", {
               connectionId: activeConnectionId,
               table: activeTable,
@@ -1845,10 +1605,9 @@ export const Editor = () => {
         );
       }
 
-      // Insertions
-      if (insertions.length > 0) {
+      if (ops.insertions.length > 0) {
         promises.push(
-          ...insertions.map((insertion) =>
+          ...ops.insertions.map((insertion) =>
             invoke("insert_record", {
               connectionId: activeConnectionId,
               table: activeTable,
@@ -1862,36 +1621,13 @@ export const Editor = () => {
 
       await Promise.all(promises);
 
-      // Remove processed changes from state
-      const newPendingChanges = { ...(pendingChanges || {}) };
-      const newPendingDeletions = { ...(pendingDeletions || {}) };
-      const newPendingInsertions = { ...(pendingInsertions || {}) };
+      const remaining = cleanupSubmittedPending(
+        activeTab.pendingChanges,
+        activeTab.pendingDeletions,
+        activeTab.pendingInsertions,
+        ops,
+      );
 
-      // Partial cleanup - remove only processed changes
-      updates.forEach((u) => delete newPendingChanges[String(u.pkVal)]);
-      deletions.forEach((d) => delete newPendingDeletions[String(d)]);
-      insertions.forEach((i) => delete newPendingInsertions[i.tempId]);
-
-      // Cleanup empty change objects
-      Object.keys(newPendingChanges).forEach((key) => {
-        if (Object.keys(newPendingChanges[key]?.changes || {}).length === 0)
-          delete newPendingChanges[key];
-      });
-
-      const remainingChanges =
-        Object.keys(newPendingChanges).length > 0
-          ? newPendingChanges
-          : undefined;
-      const remainingDeletions =
-        Object.keys(newPendingDeletions).length > 0
-          ? newPendingDeletions
-          : undefined;
-      const remainingInsertions =
-        Object.keys(newPendingInsertions).length > 0
-          ? newPendingInsertions
-          : undefined;
-
-      // Refresh query preserving remaining pending changes
       runQuery(
         activeTab.query,
         activeTab.page,
@@ -1900,11 +1636,7 @@ export const Editor = () => {
         undefined,
         undefined,
         undefined,
-        {
-          pendingChanges: remainingChanges,
-          pendingDeletions: remainingDeletions,
-          pendingInsertions: remainingInsertions,
-        },
+        remaining,
       );
     } catch (e) {
       console.error("Batch update failed", e);
@@ -1971,81 +1703,7 @@ export const Editor = () => {
 
   const handleRollbackChanges = useCallback(() => {
     if (!activeTab) return;
-    const {
-      selectedRows,
-      result,
-      pkColumn,
-      pendingChanges,
-      pendingDeletions,
-      pendingInsertions,
-    } = activeTab;
-
-    // If applyToAll is true OR no selection, rollback everything
-    if (applyToAll || !selectedRows || selectedRows.length === 0) {
-      updateActiveTab({
-        pendingChanges: undefined,
-        pendingDeletions: undefined,
-        pendingInsertions: undefined,
-      });
-      return;
-    }
-
-    // Filter rollback by selection
-    const selectedPkSet = new Set<string>();
-    const selectedDisplayIndices = new Set<number>();
-
-    // Add all selected row indices to the set
-    selectedRows.forEach((rowIndex) => {
-      selectedDisplayIndices.add(rowIndex);
-    });
-
-    // For existing rows, also collect their PK values
-    if (result && pkColumn) {
-      const pkIndex = result.columns.indexOf(pkColumn);
-      if (pkIndex !== -1) {
-        selectedRows.forEach((rowIndex) => {
-          const row = result.rows[rowIndex];
-          if (row) selectedPkSet.add(String(row[pkIndex]));
-        });
-      }
-    }
-
-    const newPendingChanges = { ...(pendingChanges || {}) };
-    const newPendingDeletions = { ...(pendingDeletions || {}) };
-    const newPendingInsertions = { ...(pendingInsertions || {}) };
-
-    // Rollback changes and deletions (for existing rows)
-    selectedPkSet.forEach((pk) => {
-      delete newPendingChanges[pk];
-      delete newPendingDeletions[pk];
-    });
-
-    // Rollback insertions (for new rows)
-    // Insertion rows are displayed AFTER existing rows, so their displayIndex = existingRowCount + insertionIndex
-    const existingRowCount = result?.rows.length || 0;
-    let insertionIndex = 0;
-    for (const tempId of Object.keys(newPendingInsertions)) {
-      const insertionDisplayIndex = existingRowCount + insertionIndex;
-      if (selectedDisplayIndices.has(insertionDisplayIndex)) {
-        delete newPendingInsertions[tempId];
-      }
-      insertionIndex++;
-    }
-
-    updateActiveTab({
-      pendingChanges:
-        Object.keys(newPendingChanges).length > 0
-          ? newPendingChanges
-          : undefined,
-      pendingDeletions:
-        Object.keys(newPendingDeletions).length > 0
-          ? newPendingDeletions
-          : undefined,
-      pendingInsertions:
-        Object.keys(newPendingInsertions).length > 0
-          ? newPendingInsertions
-          : undefined,
-    });
+    updateActiveTab(rollbackPendingForSelection(activeTab, applyToAll));
   }, [activeTab, updateActiveTab, applyToAll]);
 
   const handleEditorMount = (
