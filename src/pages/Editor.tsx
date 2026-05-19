@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { reconstructTableQuery } from "../utils/editor";
 import { isMultiDatabaseCapable } from "../utils/database";
 import { isReadonly } from "../utils/driverCapabilities";
 import {
@@ -58,19 +57,15 @@ import { ErrorModal } from "../components/modals/ErrorModal";
 import { VisualQueryBuilder } from "../components/ui/VisualQueryBuilder";
 import { ContextMenu } from "../components/ui/ContextMenu";
 import { ExportProgressModal } from "../components/modals/ExportProgressModal";
-import { splitQueries, extractTableName } from "../utils/sql";
+import { splitQueries } from "../utils/sql";
 import {
-  createResultEntries,
   updateResultEntry,
   removeResultEntry,
   removeOtherEntries,
   removeEntriesToRight,
   removeEntriesToLeft,
 } from "../utils/multiResult";
-import {
-  extractQueryParams,
-  interpolateQueryParams,
-} from "../utils/queryParameters";
+import { extractQueryParams } from "../utils/queryParameters";
 import { formatDuration } from "../utils/formatTime";
 import { SqlEditorWrapper } from "../components/ui/SqlEditorWrapper";
 import { NotebookView } from "../components/notebook/NotebookView";
@@ -86,10 +81,7 @@ import { useEditor } from "../hooks/useEditor";
 import { useConnectionLayoutContext } from "../hooks/useConnectionLayoutContext";
 import { useKeybindings } from "../hooks/useKeybindings";
 import type {
-  BatchStatementResult,
-  QueryResult,
   Tab,
-  PendingInsertion,
   TableColumn,
   ForeignKey,
 } from "../types/editor";
@@ -100,6 +92,7 @@ import { useTabContextMenu } from "../hooks/useTabContextMenu";
 import { useExplainFlow } from "../hooks/useExplainFlow";
 import { useExportFlow } from "../hooks/useExportFlow";
 import { usePendingRowOps } from "../hooks/usePendingRowOps";
+import { useQueryExecution } from "../hooks/useQueryExecution";
 import { toggleSortClause } from "../utils/sortClause";
 import { composeWindowTitle } from "../utils/windowTitle";
 import {
@@ -395,466 +388,33 @@ const [saveQueryModal, setSaveQueryModal] = useState<{
     [activeConnectionId, activeTabId, updateTab, activeSchema],
   );
 
-  const stopQuery = useCallback(async () => {
-    if (!activeConnectionId) return;
-    try {
-      await invoke("cancel_query", { connectionId: activeConnectionId });
-      updateActiveTab({ isLoading: false });
-    } catch (e) {
-      console.error("Failed to stop:", e);
-    }
-  }, [activeConnectionId, updateActiveTab]);
-
-  const runQuery = useCallback(
-    async (
-      sql?: string,
-      pageNum: number = 1,
-      tabId?: string,
-      paramsOverride?: Record<string, string>,
-      filterOverride?: string,
-      sortOverride?: string,
-      limitOverride?: number,
-      preservePendingChanges?: {
-        pendingChanges?: Record<
-          string,
-          { pkOriginalValue: unknown; changes: Record<string, unknown> }
-        >;
-        pendingDeletions?: Record<string, unknown>;
-        pendingInsertions?: Record<string, PendingInsertion>;
-      },
-    ) => {
-      const targetTabId = tabId || activeTabIdRef.current;
-      if (!activeConnectionId || !targetTabId) return;
-
-      const targetTab = tabsRef.current.find((t) => t.id === targetTabId);
-      if (!targetTab) return;
-
-      let textToRun = sql?.trim() || targetTab?.query;
-      // For Table Tabs, reconstruct query if filter/sort are present
-      if (targetTab?.type === "table" && targetTab.activeTable) {
-        const effectiveSchema =
-          activeCapabilities?.schemas === true ? targetTab.schema : undefined;
-        const tabForQuery = { ...targetTab, schema: effectiveSchema };
-        textToRun = reconstructTableQuery(
-          tabForQuery,
-          activeDriver ?? undefined,
-          {
-            filterOverride:
-              filterOverride !== undefined ? filterOverride : undefined,
-            sortOverride: sortOverride !== undefined ? sortOverride : undefined,
-            limitOverride:
-              limitOverride !== undefined ? limitOverride : undefined,
-            wrapLimitSubquery: true,
-          },
-        );
-      }
-
-      if (!textToRun || !textToRun.trim()) return;
-
-      // Check for parameters
-      const params = extractQueryParams(textToRun);
-      if (params.length > 0) {
-        const storedParams = paramsOverride || targetTab.queryParams || {};
-        const missingParams = params.filter(
-          (p) => storedParams[p] === undefined || storedParams[p].trim() === "",
-        );
-
-        // If we have missing params
-        if (missingParams.length > 0) {
-          setQueryParamsModal({
-            isOpen: true,
-            sql: textToRun,
-            parameters: params,
-            pendingPageNum: pageNum,
-            pendingTabId: targetTabId,
-            mode: "run",
-          });
-          return;
-        }
-
-        // Interpolate parameters before execution
-        textToRun = interpolateQueryParams(textToRun, storedParams);
-      }
-
-      // Automatically open results panel when running a query
-      setIsResultsCollapsed(false);
-
-      // Preserve total_rows across page changes so the count doesn't disappear
-      const previousTotalRows =
-        targetTab?.result?.pagination?.total_rows ?? null;
-
-      updateTab(targetTabId, {
-        isLoading: true,
-        error: "",
-        result: null,
-        executionTime: null,
-        page: pageNum,
-        // Clear multi-result state when running a single query
-        results: undefined,
-        activeResultId: undefined,
-        // Clear pending changes and selection when running a new query (unless preserving)
-        pendingChanges: preservePendingChanges?.pendingChanges,
-        pendingDeletions: preservePendingChanges?.pendingDeletions,
-        pendingInsertions: preservePendingChanges?.pendingInsertions,
-        selectedRows: [],
-      });
-
-      const shouldRecordHistory =
-        targetTab?.type === "console" || targetTab?.type === "query_builder";
-
-      const schema = targetTab?.schema ?? activeSchema;
-      // For history: fall back to activeDatabaseName for multi-db connections
-      // where schema may not be set on the tab
-      const historyDb = schema
-        || (isMultiDb ? activeDatabaseName : undefined)
-        || undefined;
-
-      try {
-        const start = performance.now();
-        // Use settings.resultPageSize for Page Size (pagination), ignoring the "Total Limit" input which is handled in SQL
-        // Fallback to 100 if settings not loaded yet
-        const pageSize =
-          settings.resultPageSize && settings.resultPageSize > 0
-            ? settings.resultPageSize
-            : 100;
-        const res = await invoke<QueryResult>("execute_query", {
-          connectionId: activeConnectionId,
-          query: textToRun,
-          limit: pageSize,
-          page: pageNum,
-          ...(schema ? { schema } : {}),
-        });
-        const end = performance.now();
-
-        // Fetch PK column if this is a table tab OR if the query references a table
-        const currentTab = tabsRef.current.find((t) => t.id === targetTabId);
-        let tableName = currentTab?.activeTable;
-
-        // If not a table tab, try to extract table name from the query
-        if (!tableName && textToRun) {
-          const extracted = extractTableName(textToRun);
-          // Reject views — they may not be updatable
-          if (extracted && !views.some((v) => v.name === extracted)) {
-            tableName = extracted;
-          }
-        }
-
-        const resultWithCount =
-          res.pagination &&
-          res.pagination.total_rows === null &&
-          previousTotalRows !== null
-            ? {
-                ...res,
-                pagination: {
-                  ...res.pagination,
-                  total_rows: previousTotalRows,
-                },
-              }
-            : res;
-
-        updateTab(targetTabId, {
-          result: resultWithCount,
-          executionTime: end - start,
-          isLoading: false,
-          activeTable: tableName || null,
-        });
-
-        if (tableName) {
-          // Fetch column metadata in the background; tab updates when ready
-          fetchPkColumn(tableName, targetTabId, targetTab?.schema ?? undefined);
-        } else {
-          updateTab(targetTabId, { pkColumn: null });
-        }
-
-        if (shouldRecordHistory) {
-          addHistoryEntry(
-            textToRun,
-            end - start,
-            "success",
-            res.pagination?.total_rows ?? null,
-            null,
-            historyDb,
-          );
-        }
-      } catch (err) {
-        updateTab(targetTabId, {
-          error: typeof err === "string" ? err : t("editor.queryFailed"),
-          isLoading: false,
-        });
-
-        if (shouldRecordHistory) {
-          addHistoryEntry(
-            textToRun,
-            null,
-            "error",
-            null,
-            typeof err === "string" ? err : t("editor.queryFailed"),
-            historyDb,
-          );
-        }
-      }
-    },
-    [
-      activeConnectionId,
-      updateTab,
-      settings.resultPageSize,
-      fetchPkColumn,
-      t,
-      activeDriver,
-      activeSchema,
-      activeCapabilities?.schemas,
-      views,
-      isMultiDb,
-      activeDatabaseName,
-      addHistoryEntry,
-    ],
-  );
-
-  const runMultipleQueries = useCallback(
-    async (queries: string[], paramsOverride?: Record<string, string>) => {
-      const targetTabId = activeTabIdRef.current;
-      if (!activeConnectionId || !targetTabId) return;
-
-      const targetTab = tabsRef.current.find((t) => t.id === targetTabId);
-      if (!targetTab) return;
-
-      // Collect all unique parameters across all queries
-      const allParams = [
-        ...new Set(queries.flatMap((q) => extractQueryParams(q))),
-      ];
-      if (allParams.length > 0) {
-        const storedParams =
-          paramsOverride || targetTab.queryParams || {};
-        const missingParams = allParams.filter(
-          (p) =>
-            storedParams[p] === undefined || storedParams[p].trim() === "",
-        );
-        if (missingParams.length > 0) {
-          setQueryParamsModal({
-            isOpen: true,
-            sql: queries.join(";\n"),
-            parameters: allParams,
-            pendingPageNum: 1,
-            pendingTabId: targetTabId,
-            mode: "run",
-            pendingMultiQueries: queries,
-          });
-          return;
-        }
-        // Interpolate all queries with the stored params
-        queries = queries.map((q) => interpolateQueryParams(q, storedParams));
-      }
-
-      const pageSize =
-        settings.resultPageSize && settings.resultPageSize > 0
-          ? settings.resultPageSize
-          : 100;
-      const schema = targetTab?.schema ?? activeSchema;
-      const historyDb = schema
-        || (isMultiDb ? activeDatabaseName : undefined)
-        || undefined;
-
-      const entries = createResultEntries(targetTabId, queries);
-
-      setIsResultsCollapsed(false);
-      updateTab(targetTabId, {
-        results: entries,
-        activeResultId: entries[0].id,
-        result: null,
-        error: "",
-        isLoading: true,
-        executionTime: null,
-      });
-
-      const shouldRecordHistory =
-        targetTab?.type === "console" || targetTab?.type === "query_builder";
-
-      // Run the whole script on a single pooled connection so statements
-      // can share session state (SET @var, LAST_INSERT_ID(), transactions,
-      // TEMP TABLE).
-      const batchStart = performance.now();
-      let batchResults: BatchStatementResult[];
-      try {
-        batchResults = await invoke<BatchStatementResult[]>(
-          "execute_query_batch",
-          {
-            connectionId: activeConnectionId,
-            queries: entries.map((e) => e.query),
-            limit: pageSize,
-            page: 1,
-            ...(schema ? { schema } : {}),
-          },
-        );
-      } catch (err) {
-        // Batch-level failure (e.g. connection acquisition, cancellation):
-        // mark every entry as failed so the UI doesn't sit in "loading".
-        const fallbackElapsed = performance.now() - batchStart;
-        const message = typeof err === "string" ? err : t("editor.queryFailed");
-        const failed = entries.map((entry) => ({
-          ...entry,
-          error: message,
-          executionTime: fallbackElapsed,
-          isLoading: false,
-        }));
-        updateTab(targetTabId, { results: failed, isLoading: false });
-        if (shouldRecordHistory) {
-          for (const entry of entries) {
-            addHistoryEntry(
-              entry.query,
-              fallbackElapsed,
-              "error",
-              null,
-              message,
-              historyDb,
-            );
-          }
-        }
-        return;
-      }
-
-      const liveResults = entries.map((entry, idx) => {
-        const item = batchResults[idx];
-        const execTime = item?.execution_time_ms ?? null;
-        if (item?.error) {
-          if (shouldRecordHistory) {
-            addHistoryEntry(
-              entry.query,
-              execTime,
-              "error",
-              null,
-              item.error,
-              historyDb,
-            );
-          }
-          return {
-            ...entry,
-            error: item.error,
-            executionTime: execTime,
-            isLoading: false,
-          };
-        }
-        const res = item?.result ?? null;
-        const tableName = extractTableName(entry.query) ?? null;
-        if (shouldRecordHistory) {
-          addHistoryEntry(
-            entry.query,
-            execTime,
-            "success",
-            res?.pagination?.total_rows ?? null,
-            null,
-            historyDb,
-          );
-        }
-        return {
-          ...entry,
-          result: res,
-          executionTime: execTime,
-          isLoading: false,
-          activeTable: tableName,
-        };
-      });
-
-      updateTab(targetTabId, { results: liveResults, isLoading: false });
-    },
-    [activeConnectionId, updateTab, settings.resultPageSize, activeSchema, t, isMultiDb, activeDatabaseName, addHistoryEntry],
-  );
-
-  const runResultEntryPage = useCallback(
-    async (entryId: string, pageNum: number) => {
-      const targetTabId = activeTabIdRef.current;
-      if (!activeConnectionId || !targetTabId) return;
-
-      const currentTab = tabsRef.current.find((t) => t.id === targetTabId);
-      const entry = currentTab?.results?.find((r) => r.id === entryId);
-      if (!entry) return;
-
-      const pageSize =
-        settings.resultPageSize && settings.resultPageSize > 0
-          ? settings.resultPageSize
-          : 100;
-      const schema = currentTab?.schema ?? activeSchema;
-
-      // Mark this entry as loading
-      if (currentTab?.results) {
-        updateTab(targetTabId, {
-          results: updateResultEntry(currentTab.results, entryId, {
-            isLoading: true,
-          }),
-        });
-      }
-
-      try {
-        const start = performance.now();
-        const res = await invoke<QueryResult>("execute_query", {
-          connectionId: activeConnectionId,
-          query: entry.query,
-          limit: pageSize,
-          page: pageNum,
-          ...(schema ? { schema } : {}),
-        });
-        const end = performance.now();
-
-        const latestTab = tabsRef.current.find((t) => t.id === targetTabId);
-        if (latestTab?.results) {
-          const previousTotalRows =
-            entry.result?.pagination?.total_rows ?? null;
-          const resultWithCount =
-            res.pagination &&
-            res.pagination.total_rows === null &&
-            previousTotalRows !== null
-              ? {
-                  ...res,
-                  pagination: {
-                    ...res.pagination,
-                    total_rows: previousTotalRows,
-                  },
-                }
-              : res;
-
-          updateTab(targetTabId, {
-            results: updateResultEntry(latestTab.results, entryId, {
-              result: resultWithCount,
-              executionTime: end - start,
-              isLoading: false,
-              page: pageNum,
-            }),
-          });
-        }
-      } catch (err) {
-        const latestTab = tabsRef.current.find((t) => t.id === targetTabId);
-        if (latestTab?.results) {
-          updateTab(targetTabId, {
-            results: updateResultEntry(latestTab.results, entryId, {
-              error:
-                typeof err === "string" ? err : t("editor.queryFailed"),
-              isLoading: false,
-            }),
-          });
-        }
-      }
-    },
-    [activeConnectionId, updateTab, settings.resultPageSize, activeSchema, t],
-  );
-
-  const loadCount = useCallback(async () => {
-    if (!activeTab?.result?.pagination || !activeConnectionId) return;
-    setIsCountLoading(true);
-    try {
-      const total = await invoke<number>("count_query", {
-        connectionId: activeConnectionId,
-        query: activeTab.query,
-        schema: activeTab.schema ?? activeSchema,
-      });
-      updateTab(activeTab.id, {
-        result: {
-          ...activeTab.result,
-          pagination: { ...activeTab.result.pagination, total_rows: total },
-        },
-      });
-    } finally {
-      setIsCountLoading(false);
-    }
-  }, [activeTab, activeConnectionId, activeSchema, updateTab]);
+  const {
+    runQuery,
+    runMultipleQueries,
+    runResultEntryPage,
+    loadCount,
+    stopQuery,
+  } = useQueryExecution({
+    activeTab,
+    activeTabIdRef,
+    tabsRef,
+    activeConnectionId,
+    activeDriver,
+    activeSchema,
+    activeDatabaseName,
+    schemasEnabled: activeCapabilities?.schemas === true,
+    isMultiDb,
+    views,
+    updateTab,
+    updateActiveTab,
+    addHistoryEntry,
+    fetchPkColumn,
+    t,
+    resultPageSize: settings.resultPageSize ?? 100,
+    setIsResultsCollapsed,
+    setIsCountLoading,
+    setQueryParamsModal,
+  });
 
   const handleRunButton = useCallback(() => {
     if (!activeTab) return;
@@ -911,9 +471,11 @@ const [saveQueryModal, setSaveQueryModal] = useState<{
   }, [activeTab, runQuery, runMultipleQueries]);
 
   // Keep stable refs in sync for Monaco actions (closure-captured at mount time)
-  runQueryRef.current = runQuery;
-  runMultipleQueriesRef.current = runMultipleQueries;
-  openExplainForQueryRef.current = openExplainForQuery;
+  useEffect(() => {
+    runQueryRef.current = runQuery;
+    runMultipleQueriesRef.current = runMultipleQueries;
+    openExplainForQueryRef.current = openExplainForQuery;
+  }, [runQuery, runMultipleQueries, openExplainForQuery]);
 
   // Global Ctrl/Command+F5 shortcut for Run
   useEffect(() => {
