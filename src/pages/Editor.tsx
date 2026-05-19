@@ -137,13 +137,7 @@ import {
   resolveNavTabTitle,
   type EditorNavState,
 } from "../utils/editorNavigation";
-import { computeResizeHeight } from "../utils/editorResize";
-
-const RESIZE_BOUNDS = {
-  offsetTop: 50,
-  minHeight: 100,
-  bottomMargin: 150,
-};
+import { useEditorResize } from "../hooks/useEditorResize";
 import clsx from "clsx";
 
 interface ExportProgress {
@@ -295,11 +289,8 @@ export const Editor = () => {
 
   const [showNewRowModal, setShowNewRowModal] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const [editorHeight, setEditorHeight] = useState(300);
-  const editorHeightRef = useRef(300);
+  const { editorHeight, startResize } = useEditorResize();
   const [isResultsCollapsed, setIsResultsCollapsed] = useState(false);
-  const isDragging = useRef(false);
-  const rafRef = useRef<number | null>(null);
   const editorsRef = useRef<Record<string, Parameters<OnMount>[0]>>({});
   const [monacoInstance, setMonacoInstance] = useState<Monaco | null>(null);
 
@@ -1790,47 +1781,6 @@ export const Editor = () => {
       }
     });
   }, [tabs, runQuery]);
-
-  const startResize = () => {
-    isDragging.current = true;
-    document.body.style.cursor = "row-resize";
-
-    // Overlay prevents CodeMirror from capturing mouse events during drag
-    const overlay = document.createElement("div");
-    overlay.style.cssText =
-      "position:fixed;inset:0;z-index:9999;cursor:row-resize";
-    document.body.appendChild(overlay);
-
-    const panels = document.querySelectorAll<HTMLElement>("[data-editor-panel]");
-
-    const handleResize = (e: MouseEvent) => {
-      if (!isDragging.current) return;
-      const newHeight = computeResizeHeight(
-        e.clientY,
-        window.innerHeight,
-        RESIZE_BOUNDS,
-      );
-      if (newHeight === null) return;
-      editorHeightRef.current = newHeight;
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(() => {
-        panels.forEach((el) => {
-          el.style.height = `${newHeight}px`;
-        });
-      });
-    };
-    const stopResize = () => {
-      isDragging.current = false;
-      document.body.style.cursor = "";
-      overlay.remove();
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      setEditorHeight(editorHeightRef.current);
-      document.removeEventListener("mousemove", handleResize);
-      document.removeEventListener("mouseup", stopResize);
-    };
-    document.addEventListener("mousemove", handleResize);
-    document.addEventListener("mouseup", stopResize);
-  };
 
   const cancelExport = useCallback(async () => {
     if (!activeConnectionId) return;
