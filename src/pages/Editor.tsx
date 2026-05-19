@@ -56,7 +56,6 @@ import {
   FileJson,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { TableToolbar } from "../components/ui/TableToolbar";
 import { DataGrid } from "../components/ui/DataGrid";
 import { MultiResultPanel } from "../components/ui/MultiResultPanel";
@@ -70,10 +69,7 @@ import { QueryParamsModal } from "../components/modals/QueryParamsModal";
 import { ErrorModal } from "../components/modals/ErrorModal";
 import { VisualQueryBuilder } from "../components/ui/VisualQueryBuilder";
 import { ContextMenu } from "../components/ui/ContextMenu";
-import {
-  ExportProgressModal,
-  type ExportStatus,
-} from "../components/modals/ExportProgressModal";
+import { ExportProgressModal } from "../components/modals/ExportProgressModal";
 import { splitQueries, extractTableName } from "../utils/sql";
 import {
   createResultEntries,
@@ -93,7 +89,6 @@ import { NotebookView } from "../components/notebook/NotebookView";
 import { createNotebook } from "../utils/notebookStore";
 import { registerSqlAutocomplete } from "../utils/autocomplete";
 import { type OnMount, type Monaco } from "@monaco-editor/react";
-import { save } from "@tauri-apps/plugin-dialog";
 import { useAlert } from "../hooks/useAlert";
 import { useDatabase } from "../hooks/useDatabase";
 import { useSavedQueries } from "../hooks/useSavedQueries";
@@ -115,6 +110,7 @@ import { resolveNextTabId, isFocusedPane } from "../utils/tabScroll";
 import { useTabScroll } from "../hooks/useTabScroll";
 import { useTabContextMenu } from "../hooks/useTabContextMenu";
 import { useExplainFlow } from "../hooks/useExplainFlow";
+import { useExportFlow } from "../hooks/useExportFlow";
 import { toggleSortClause } from "../utils/sortClause";
 import { composeWindowTitle } from "../utils/windowTitle";
 import {
@@ -136,10 +132,6 @@ import {
 } from "../utils/editorNavigation";
 import { useEditorResize } from "../hooks/useEditorResize";
 import clsx from "clsx";
-
-interface ExportProgress {
-  rows_processed: number;
-}
 
 const CHEVRON_SELECT_STYLE: React.CSSProperties = {
   backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`,
@@ -191,32 +183,7 @@ export const Editor = () => {
     message: string;
   }>({ isOpen: false, message: "" });
 
-  const [exportState, setExportState] = useState<{
-    isOpen: boolean;
-    status: ExportStatus;
-    rowsProcessed: number;
-    fileName: string;
-    errorMessage?: string;
-  }>({
-    isOpen: false,
-    status: "exporting",
-    rowsProcessed: 0,
-    fileName: "",
-  });
-
-  useEffect(() => {
-    const unlisten = listen<ExportProgress>("export_progress", (event) => {
-      setExportState((prev) => ({
-        ...prev,
-        rowsProcessed: event.payload.rows_processed,
-      }));
-    });
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, []);
-
-  const [saveQueryModal, setSaveQueryModal] = useState<{
+const [saveQueryModal, setSaveQueryModal] = useState<{
     isOpen: boolean;
     sql: string;
   }>({ isOpen: false, sql: "" });
@@ -238,7 +205,6 @@ export const Editor = () => {
   });
 
   const [showNewRowModal, setShowNewRowModal] = useState(false);
-  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const { editorHeight, startResize } = useEditorResize();
   const [isResultsCollapsed, setIsResultsCollapsed] = useState(false);
   const editorsRef = useRef<Record<string, Parameters<OnMount>[0]>>({});
@@ -272,6 +238,22 @@ export const Editor = () => {
   const [csvDelimiter, setCsvDelimiter] = useState(
     settings.csvDelimiter ?? ",",
   );
+
+  const {
+    exportState,
+    exportMenuOpen,
+    setExportMenuOpen,
+    cancelExport,
+    closeExportModal,
+    handleExportCSV,
+    handleExportJSON,
+  } = useExportFlow({
+    activeTab,
+    activeConnectionId,
+    activeDriver,
+    schemasEnabled: activeCapabilities?.schemas === true,
+    csvDelimiter,
+  });
 
   const activeTabType = activeTab?.type;
   const activeTabQuery = activeTab?.query;
@@ -1681,78 +1663,6 @@ export const Editor = () => {
       }
     });
   }, [tabs, runQuery]);
-
-  const cancelExport = useCallback(async () => {
-    if (!activeConnectionId) return;
-    try {
-      await invoke("cancel_export", { connectionId: activeConnectionId });
-      setExportState((prev) => ({
-        ...prev,
-        isOpen: false,
-      }));
-    } catch (e) {
-      console.error("Failed to cancel export", e);
-    }
-  }, [activeConnectionId]);
-
-  const closeExportModal = useCallback(() => {
-    setExportState((prev) => ({ ...prev, isOpen: false }));
-  }, []);
-
-  const handleExportCommon = async (format: "csv" | "json") => {
-    if (!activeTab || !activeConnectionId) return;
-
-    const effectiveSchema =
-      activeCapabilities?.schemas === true ? activeTab.schema : undefined;
-    const tabForQuery = { ...activeTab, schema: effectiveSchema };
-    const query =
-      activeTab.type === "table" && activeTab.activeTable
-        ? reconstructTableQuery(tabForQuery, activeDriver ?? undefined)
-        : activeTab.query;
-
-    if (!query || !query.trim()) return;
-
-    try {
-      const filePath = await save({
-        filters: [{ name: format.toUpperCase(), extensions: [format] }],
-        defaultPath: `result_${Date.now()}.${format}`,
-      });
-
-      if (!filePath) return;
-
-      setExportState({
-        isOpen: true,
-        status: "exporting",
-        rowsProcessed: 0,
-        fileName: filePath.split(/[/\\]/).pop() || filePath, // Show only filename
-      });
-      setExportMenuOpen(false);
-
-      await invoke("export_query_to_file", {
-        connectionId: activeConnectionId,
-        query,
-        filePath,
-        format,
-        csvDelimiter: format === "csv" ? csvDelimiter : undefined,
-      });
-
-      // Success: update modal state instead of showing toast
-      setExportState((prev) => ({
-        ...prev,
-        status: "completed",
-      }));
-    } catch (e) {
-      // Error: update modal state
-      setExportState((prev) => ({
-        ...prev,
-        status: "error",
-        errorMessage: String(e),
-      }));
-    }
-  };
-
-  const handleExportCSV = () => handleExportCommon("csv");
-  const handleExportJSON = () => handleExportCommon("json");
 
   const handleRunDropdownToggle = useCallback(() => {
     if (!isRunDropdownOpen) {
