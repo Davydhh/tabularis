@@ -114,6 +114,7 @@ import { buildForeignKeyFilterClause } from "../utils/foreignKeys";
 import { resolveNextTabId, isFocusedPane } from "../utils/tabScroll";
 import { useTabScroll } from "../hooks/useTabScroll";
 import { useTabContextMenu } from "../hooks/useTabContextMenu";
+import { useExplainFlow } from "../hooks/useExplainFlow";
 import { toggleSortClause } from "../utils/sortClause";
 import { composeWindowTitle } from "../utils/windowTitle";
 import {
@@ -251,10 +252,16 @@ export const Editor = () => {
   const [isDbDropdownOpen, setIsDbDropdownOpen] = useState(false);
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isAiExplainModalOpen, setIsAiExplainModalOpen] = useState(false);
-  const [isVisualExplainOpen, setIsVisualExplainOpen] = useState(false);
-  const [visualExplainQuery, setVisualExplainQuery] = useState<string | null>(null);
-  const [isExplainSelectionOpen, setIsExplainSelectionOpen] = useState(false);
-  const [explainSelectableQueries, setExplainSelectableQueries] = useState<{ query: string; index: number }[]>([]);
+  const {
+    isVisualExplainOpen,
+    visualExplainQuery,
+    isExplainSelectionOpen,
+    explainSelectableQueries,
+    openExplainForQuery,
+    closeVisualExplain,
+    closeExplainSelection,
+    handleExplainButton,
+  } = useExplainFlow({ activeTab, activeConnectionId, editorsRef });
   const [isEditingPage, setIsEditingPage] = useState(false);
   const [tempPage, setTempPage] = useState("1");
   const [isCountLoading, setIsCountLoading] = useState(false);
@@ -932,34 +939,6 @@ export const Editor = () => {
       setIsQuerySelectionModalOpen(true);
     }
   }, [activeTab, runQuery, runMultipleQueries]);
-
-  const openExplainForQuery = useCallback((query: string) => {
-    setVisualExplainQuery(query);
-    setIsVisualExplainOpen(true);
-  }, []);
-
-  const handleExplainButton = useCallback(() => {
-    if (!activeTab || !activeConnectionId) return;
-
-    const editor = editorsRef.current[activeTab.id];
-    const text = editor
-      ? getEditorTextOrSelection(editor)
-      : (activeTab.query ?? "").trim();
-
-    const target = resolveExplainTarget(text);
-    switch (target.kind) {
-      case "none":
-        return;
-      case "fallback":
-      case "single":
-        openExplainForQuery(target.query);
-        return;
-      case "choose":
-        setExplainSelectableQueries(target.choices);
-        setIsExplainSelectionOpen(true);
-        return;
-    }
-  }, [activeTab, activeConnectionId, openExplainForQuery]);
 
   // Keep stable refs in sync for Monaco actions (closure-captured at mount time)
   runQueryRef.current = runQuery;
@@ -2790,10 +2769,7 @@ export const Editor = () => {
       />
       <VisualExplainModal
         isOpen={isVisualExplainOpen}
-        onClose={() => {
-          setIsVisualExplainOpen(false);
-          setVisualExplainQuery(null);
-        }}
+        onClose={closeVisualExplain}
         query={visualExplainQuery ?? activeTab?.query ?? ""}
         connectionId={activeConnectionId ?? ""}
         schema={activeTab?.schema ?? activeSchema ?? undefined}
@@ -2802,10 +2778,10 @@ export const Editor = () => {
         isOpen={isExplainSelectionOpen}
         queries={explainSelectableQueries}
         onSelect={(q) => {
-          setIsExplainSelectionOpen(false);
+          closeExplainSelection();
           openExplainForQuery(q);
         }}
-        onClose={() => setIsExplainSelectionOpen(false)}
+        onClose={closeExplainSelection}
       />
       {tabContextMenu && (
         <ContextMenu
