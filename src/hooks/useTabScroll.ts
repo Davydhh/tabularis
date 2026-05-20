@@ -8,7 +8,7 @@ import {
 interface UseTabScrollParams<T extends TabLike> {
   tabs: T[];
   activeTabId: string | null;
-  setActiveTabId: (id: string | null) => void;
+  setActiveTabId: (id: string) => void;
 }
 
 export function useTabScroll<T extends TabLike>({

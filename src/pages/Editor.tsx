@@ -1961,7 +1961,7 @@ const [saveQueryModal, setSaveQueryModal] = useState<{
         onSubmit={handleParamsSubmit}
         parameters={queryParamsModal.parameters}
         initialValues={
-          tabsRef.current.find((t) => t.id === queryParamsModal.pendingTabId)
+          tabs.find((t) => t.id === queryParamsModal.pendingTabId)
             ?.queryParams || {}
         }
         mode={queryParamsModal.mode}
