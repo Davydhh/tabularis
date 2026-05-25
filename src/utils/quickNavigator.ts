@@ -5,7 +5,7 @@ export interface NavigatorItem {
   type: "table" | "view" | "routine" | "trigger";
   schema?: string;
   detail?: string;
-  item: any;
+  item: TableInfo | ViewInfo | RoutineInfo | TriggerInfo;
 }
 
 export interface NavigatorItemParams {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Search, X, Table, Eye, Code2, Zap, Database, Play } from "lucide-react";
@@ -8,6 +8,7 @@ import { useAlert } from "../../hooks/useAlert";
 import { quoteTableRef } from "../../utils/identifiers";
 import { isMultiDatabaseCapable, getDatabaseList } from "../../utils/database";
 import { getNavigatorItems, filterNavigatorItems } from "../../utils/quickNavigator";
+import type { RoutineInfo, TriggerInfo } from "../../contexts/DatabaseContext";
 
 interface QuickNavigatorModalProps {
   isOpen: boolean;
@@ -29,9 +30,7 @@ export const QuickNavigatorModal = ({ isOpen, onClose, onGenerateSql }: QuickNav
     views,
     routines,
     triggers,
-    selectedSchemas,
     schemaDataMap,
-    selectedDatabases,
     databaseDataMap,
     activeSchema,
     setActiveTable,
@@ -119,11 +118,6 @@ export const QuickNavigatorModal = ({ isOpen, onClose, onGenerateSql }: QuickNav
     return filterNavigatorItems(items, search);
   }, [items, search]);
 
-  // Reset selected index when search changes
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [search]);
-
   // Scroll active item into view
   useEffect(() => {
     if (listRef.current) {
@@ -135,7 +129,7 @@ export const QuickNavigatorModal = ({ isOpen, onClose, onGenerateSql }: QuickNav
   }, [selectedIndex]);
 
   // Handle open actions
-  const handleSelect = async (item: typeof items[number]) => {
+  const handleSelect = useCallback(async (item: typeof items[number]) => {
     onClose();
     const { name, type, schema } = item;
 
@@ -194,7 +188,7 @@ export const QuickNavigatorModal = ({ isOpen, onClose, onGenerateSql }: QuickNav
         const definition = await invoke<string>("get_routine_definition", {
           connectionId: activeConnectionId,
           routineName: name,
-          routineType: item.item.routine_type,
+          routineType: (item.item as RoutineInfo).routine_type,
           ...(schema ? { schema } : {}),
         });
         navigate("/editor", {
@@ -218,7 +212,7 @@ export const QuickNavigatorModal = ({ isOpen, onClose, onGenerateSql }: QuickNav
         const definition = await invoke<string>("get_trigger_definition", {
           connectionId: activeConnectionId,
           triggerName: name,
-          tableName: item.item.table_name,
+          tableName: (item.item as TriggerInfo).table_name,
           ...(schema ? { schema } : {}),
         });
         navigate("/editor", {
@@ -239,7 +233,16 @@ export const QuickNavigatorModal = ({ isOpen, onClose, onGenerateSql }: QuickNav
         );
       }
     }
-  };
+  }, [
+    activeConnectionId,
+    activeCapabilities,
+    activeDriver,
+    navigate,
+    onClose,
+    setActiveTable,
+    showAlert,
+    t,
+  ]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -282,15 +285,7 @@ export const QuickNavigatorModal = ({ isOpen, onClose, onGenerateSql }: QuickNav
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [isOpen, filteredItems, selectedIndex]);
-
-  // Reset text search when opening/closing
-  useEffect(() => {
-    if (isOpen) {
-      setSearch("");
-      setSelectedIndex(0);
-    }
-  }, [isOpen]);
+  }, [isOpen, filteredItems, selectedIndex, handleSelect, onClose]);
 
   if (!isOpen) return null;
 
@@ -309,7 +304,10 @@ export const QuickNavigatorModal = ({ isOpen, onClose, onGenerateSql }: QuickNav
           <input
             type="text"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setSelectedIndex(0);
+            }}
             className="flex-1 bg-transparent text-primary placeholder-muted outline-none text-sm"
             placeholder={t("editor.quickNavigator.placeholder")}
             autoFocus

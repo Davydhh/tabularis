@@ -366,7 +366,7 @@ export const Sidebar = () => {
           ))}
         </div>
       )}
-      {activeConnectionId && (
+      {activeConnectionId && isQuickNavigatorOpen && (
         <QuickNavigatorModal
           isOpen={isQuickNavigatorOpen}
           onClose={() => setIsQuickNavigatorOpen(false)}
