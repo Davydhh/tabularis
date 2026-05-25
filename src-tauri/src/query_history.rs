@@ -288,11 +288,19 @@ pub fn backfill_missing_database(entries: &mut [QueryHistoryEntry], database: &s
 /// Backfill `database` on history entries for a connection where it is currently `None`.
 /// Used when a connection transitions from single-db to multi-db: existing entries
 /// without an explicit database get associated with the original single database.
-pub fn backfill_missing_database_for_connection<R: Runtime>(
+///
+/// Acquires the per-connection [`QueryHistoryState`] lock so concurrent
+/// `add_query_history_entry` calls can't race the read-modify-write sequence
+/// and lose entries.
+pub async fn backfill_missing_database_for_connection<R: Runtime>(
     app: &AppHandle<R>,
     connection_id: &str,
     database: &str,
 ) -> Result<usize, String> {
+    let state = app.state::<QueryHistoryState>();
+    let lock = acquire_lock(&state, connection_id).await;
+    let _guard = lock.lock().await;
+
     let mut entries = read_history(app, connection_id)?;
     let updated = backfill_missing_database(&mut entries, database);
     if updated > 0 {
@@ -302,10 +310,18 @@ pub fn backfill_missing_database_for_connection<R: Runtime>(
 }
 
 /// Remove history file for a connection (called during connection deletion).
-pub fn remove_history_for_connection<R: Runtime>(
+///
+/// Acquires the per-connection [`QueryHistoryState`] lock so an in-flight
+/// `add_query_history_entry` (started before the connection was deleted) can't
+/// recreate the file after we remove it.
+pub async fn remove_history_for_connection<R: Runtime>(
     app: &AppHandle<R>,
     connection_id: &str,
 ) -> Result<(), String> {
+    let state = app.state::<QueryHistoryState>();
+    let lock = acquire_lock(&state, connection_id).await;
+    let _guard = lock.lock().await;
+
     let path = get_history_path(app, connection_id)?;
     if path.exists() {
         fs::remove_file(path).map_err(|e| e.to_string())?;
