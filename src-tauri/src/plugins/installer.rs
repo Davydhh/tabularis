@@ -22,14 +22,86 @@ struct InstalledPluginManifest {
 }
 
 pub fn get_plugins_dir() -> Result<PathBuf, String> {
-    let proj_dirs = ProjectDirs::from("com", "debba", "tabularis")
-        .ok_or_else(|| "Could not determine project directories".to_string())?;
-    let plugins_dir = proj_dirs.data_dir().join("plugins");
+    let plugins_dir = crate::paths::get_app_data_dir().join("plugins");
     if !plugins_dir.exists() {
         fs::create_dir_all(&plugins_dir)
             .map_err(|e| format!("Failed to create plugins directory: {}", e))?;
     }
     Ok(plugins_dir)
+}
+
+/// Plugins directory used by builds before the project dirs were unified under
+/// `tabularis` (the old `com.debba.tabularis` identifier). On Linux this equals
+/// the current directory, so callers must guard against migrating onto itself.
+fn legacy_plugins_dir() -> Option<PathBuf> {
+    ProjectDirs::from("com", "debba", "tabularis").map(|pd| pd.data_dir().join("plugins"))
+}
+
+fn dir_has_entries(dir: &Path) -> bool {
+    fs::read_dir(dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
+/// Move plugin folders from `legacy` into `target`. No-op when there is nothing
+/// to move, when the paths are identical (Linux), or when `target` already holds
+/// plugins (never clobber an existing install). Returns the number of folders
+/// moved. Best-effort: per-entry failures are logged and skipped.
+pub(crate) fn migrate_plugins_between(legacy: &Path, target: &Path) -> usize {
+    if legacy == target || !legacy.is_dir() || dir_has_entries(target) {
+        return 0;
+    }
+
+    let entries = match fs::read_dir(legacy) {
+        Ok(entries) => entries,
+        Err(e) => {
+            log::error!("Plugin migration: failed to read {:?}: {}", legacy, e);
+            return 0;
+        }
+    };
+    if let Err(e) = fs::create_dir_all(target) {
+        log::error!("Plugin migration: failed to create {:?}: {}", target, e);
+        return 0;
+    }
+
+    let mut moved = 0;
+    for entry in entries.flatten() {
+        let dest = target.join(entry.file_name());
+        if dest.exists() {
+            continue;
+        }
+        match fs::rename(entry.path(), &dest) {
+            Ok(()) => moved += 1,
+            Err(e) => log::error!(
+                "Plugin migration: failed to move {:?} -> {:?}: {}",
+                entry.path(),
+                dest,
+                e
+            ),
+        }
+    }
+    // Best-effort cleanup of the now-empty legacy directory.
+    let _ = fs::remove_dir(legacy);
+    moved
+}
+
+/// One-time migration: relocate plugins from the legacy `com.debba.tabularis`
+/// project dir into the unified `tabularis` data dir. Safe to call on every
+/// startup — it only does work the first time after upgrading.
+pub fn migrate_legacy_plugins_dir() {
+    let Some(legacy) = legacy_plugins_dir() else {
+        return;
+    };
+    let target = crate::paths::get_app_data_dir().join("plugins");
+    let moved = migrate_plugins_between(&legacy, &target);
+    if moved > 0 {
+        log::info!(
+            "Migrated {} plugin(s) from legacy directory {:?} to {:?}",
+            moved,
+            legacy,
+            target
+        );
+    }
 }
 
 pub(crate) fn read_plugin_info_from_dir(path: &Path) -> Result<InstalledPluginInfo, String> {

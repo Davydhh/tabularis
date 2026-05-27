@@ -13,10 +13,10 @@ pub mod ai_notebook_export_tests;
 pub mod cli;
 pub mod clipboard_import;
 pub mod commands;
+pub mod config;
 pub mod connection_appearance;
 #[cfg(test)]
 pub mod connection_appearance_tests;
-pub mod config;
 pub mod connection_cache;
 #[cfg(test)]
 pub mod connection_cache_tests;
@@ -45,6 +45,8 @@ pub mod models;
 pub mod models_tests;
 pub mod notebooks;
 pub mod paths; // Added
+#[cfg(test)]
+pub mod paths_tests;
 pub mod persistence;
 pub mod plugins;
 pub mod pool_manager;
@@ -179,6 +181,10 @@ pub fn run() {
             let active_ext_drivers =
                 crate::config::load_config_internal(&app.handle()).active_external_drivers;
 
+            // One-time migration of plugins stored under the legacy
+            // `com.debba.tabularis` directory into the unified `tabularis` dir.
+            crate::plugins::installer::migrate_legacy_plugins_dir();
+
             // Register built-in drivers
             tauri::async_runtime::block_on(async {
                 drivers::registry::register_driver(drivers::mysql::MysqlDriver::new()).await;
@@ -223,9 +229,7 @@ pub fn run() {
             // meant to be a dedicated plan viewer, not a full app launch.
             if let Some(path) = args.explain.clone() {
                 log::info!("CLI --explain received: {path}");
-                if let Err(e) =
-                    explain_import::spawn_visual_explain_window(app, Some(path))
-                {
+                if let Err(e) = explain_import::spawn_visual_explain_window(app, Some(path)) {
                     log::error!("Failed to open Visual Explain window: {e}");
                 }
                 // Close the default main window only AFTER visual-explain is

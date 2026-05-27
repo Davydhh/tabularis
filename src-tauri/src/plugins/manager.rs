@@ -3,7 +3,6 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
-use directories::ProjectDirs;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
@@ -66,19 +65,13 @@ pub async fn load_plugins<R: tauri::Runtime>(app: &AppHandle<R>, enabled_ids: Op
         .plugins
         .unwrap_or_default();
 
-    let proj_dirs = match ProjectDirs::from("com", "debba", "tabularis") {
-        Some(d) => d,
-        None => return,
-    };
-
-    let plugins_dir = proj_dirs.data_dir().join("plugins");
-
-    if !plugins_dir.exists() {
-        if let Err(e) = fs::create_dir_all(&plugins_dir) {
-            log::error!("Failed to create plugins directory: {}", e);
+    let plugins_dir = match crate::plugins::installer::get_plugins_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::error!("{}", e);
             return;
         }
-    }
+    };
 
     let entries = match fs::read_dir(&plugins_dir) {
         Ok(e) => e,
