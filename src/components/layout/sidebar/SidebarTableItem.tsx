@@ -147,6 +147,8 @@ export const SidebarTableItem = ({
   return (
     <div className="flex flex-col">
       <div
+        data-table-name={table.name}
+        data-schema={schema ?? ''}
         onPointerDown={(e) => {
           dragState.start(table.name);
           const ghost = document.createElement('div');

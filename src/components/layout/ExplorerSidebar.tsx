@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { quoteTableRef } from "../../utils/identifiers";
@@ -131,6 +131,7 @@ export const ExplorerSidebar = ({ sidebarWidth, startResize, onCollapse, sidebar
   const { showAlert } = useAlert();
   const navigate = useNavigate();
   const [schemaVersion, setSchemaVersion] = useState(0);
+  const sidebarBodyRef = useRef<HTMLDivElement>(null);
 
   const { splitView, isSplitVisible, explorerConnectionId, setExplorerConnectionId } = useConnectionLayoutContext();
 
@@ -370,6 +371,16 @@ export const ExplorerSidebar = ({ sidebarWidth, startResize, onCollapse, sidebar
 
   const isMultiDb = isMultiDatabaseCapable(activeCapabilities) && selectedDatabases.length > 1;
 
+  useEffect(() => {
+    if (!activeTable || !sidebarBodyRef.current) return;
+    const el = sidebarBodyRef.current.querySelector<HTMLElement>(
+      `[data-table-name="${activeTable}"][data-schema="${activeSchema ?? ''}"]`
+    );
+    if (el) {
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [activeTable, activeSchema]);
+
   return (
     <>
       <aside
@@ -553,7 +564,7 @@ export const ExplorerSidebar = ({ sidebarWidth, startResize, onCollapse, sidebar
           ))}
         </div>
 
-        <div className="flex-1 overflow-y-auto py-2">
+        <div ref={sidebarBodyRef} className="flex-1 overflow-y-auto py-2">
           {/* Favorites tab */}
           {sidebarTab === "favorites" && (<div className="animate-fade-in">{(() => {
             const sorted = [...queries].sort((a, b) => {
