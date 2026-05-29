@@ -60,6 +60,7 @@ import { TriggerEditorModal } from "../modals/TriggerEditorModal";
 import { ConfirmModal } from "../modals/ConfirmModal";
 import { Accordion } from "./sidebar/Accordion";
 import { SidebarTableItem } from "./sidebar/SidebarTableItem";
+import { buildTableItemSelector } from "../../utils/sidebarTableItem";
 import { SidebarViewItem } from "./sidebar/SidebarViewItem";
 import { SidebarRoutineItem } from "./sidebar/SidebarRoutineItem";
 import { SidebarSchemaItem } from "./sidebar/SidebarSchemaItem";
@@ -390,13 +391,27 @@ export const ExplorerSidebar = ({ sidebarWidth, startResize, onCollapse, sidebar
   const isMultiDb = isMultiDatabaseCapable(activeCapabilities) && selectedDatabases.length > 1;
 
   useEffect(() => {
-    if (!activeTable || !sidebarBodyRef.current) return;
-    const el = sidebarBodyRef.current.querySelector<HTMLElement>(
-      `[data-table-name="${activeTable}"][data-schema="${activeSchema ?? ''}"]`
-    );
-    if (el) {
-      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
+    if (!activeTable) return;
+    const container = sidebarBodyRef.current;
+    if (!container) return;
+
+    const selector = buildTableItemSelector(activeTable, activeSchema);
+    // The target database/schema may have just been expanded and its tables
+    // loaded asynchronously, so the item might not be in the DOM on the first
+    // tick. Retry across frames until it appears; without this an upward scroll
+    // to a freshly expanded section silently does nothing.
+    let frame = 0;
+    let rafId = requestAnimationFrame(function tryScroll() {
+      const el = container.querySelector<HTMLElement>(selector);
+      if (el) {
+        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+      if (frame++ < 120) {
+        rafId = requestAnimationFrame(tryScroll);
+      }
+    });
+    return () => cancelAnimationFrame(rafId);
   }, [activeTable, activeSchema]);
 
   return (
