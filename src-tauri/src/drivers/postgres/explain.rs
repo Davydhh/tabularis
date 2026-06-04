@@ -36,7 +36,10 @@ pub async fn explain_query(
     // column instead, so fall back to reading the raw string in that case.
     let plan_json_str = match rows[0].try_get::<_, serde_json::Value>(0) {
         Ok(value) => value.to_string(),
-        Err(_) => rows[0].try_get::<_, String>(0).map_err(|e| format_pg_error(&e))?,
+		Err(json_err) => rows[0].try_get::<_, String>(0).map_err(|e| {
+    	log::debug!("EXPLAIN json read failed ({json_err}); text read also failed");
+    	format_pg_error(&e)
+	})?,
     };
 
     let mut plan = parse_postgres_json(&plan_json_str)?;
