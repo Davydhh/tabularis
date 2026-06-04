@@ -828,6 +828,8 @@
     "queryFailed": "クエリが失敗しました。",
     "showErrorDetails": "詳細を表示",
     "hideErrorDetails": "詳細を非表示",
+    "showQuery": "クエリを表示",
+    "hideQuery": "クエリを非表示",
     "showExecutedQuery": "実行されたクエリを表示",
     "hideExecutedQuery": "実行されたクエリを非表示",
     "errorBoundary": {

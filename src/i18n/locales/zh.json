@@ -783,6 +783,8 @@
     "queryFailed": "查询失败。",
     "showErrorDetails": "显示详情",
     "hideErrorDetails": "隐藏详情",
+    "showQuery": "显示查询",
+    "hideQuery": "隐藏查询",
     "showExecutedQuery": "显示已执行的查询",
     "hideExecutedQuery": "隐藏已执行的查询",
     "errorBoundary": {

@@ -816,6 +816,8 @@
     "queryFailed": "Query failed.",
     "showErrorDetails": "Show details",
     "hideErrorDetails": "Hide details",
+    "showQuery": "Show query",
+    "hideQuery": "Hide query",
     "showExecutedQuery": "Show executed query",
     "hideExecutedQuery": "Hide executed query",
     "errorBoundary": {

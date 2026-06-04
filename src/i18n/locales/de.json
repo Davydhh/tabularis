@@ -815,6 +815,8 @@
     "queryFailed": "Abfrage fehlgeschlagen.",
     "showErrorDetails": "Details anzeigen",
     "hideErrorDetails": "Details ausblenden",
+    "showQuery": "Abfrage anzeigen",
+    "hideQuery": "Abfrage ausblenden",
     "showExecutedQuery": "Ausgeführte Abfrage anzeigen",
     "hideExecutedQuery": "Ausgeführte Abfrage ausblenden",
     "errorBoundary": {

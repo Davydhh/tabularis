@@ -815,6 +815,8 @@
     "queryFailed": "Échec de la requête.",
     "showErrorDetails": "Afficher les détails",
     "hideErrorDetails": "Masquer les détails",
+    "showQuery": "Afficher la requête",
+    "hideQuery": "Masquer la requête",
     "showExecutedQuery": "Afficher la requête exécutée",
     "hideExecutedQuery": "Masquer la requête exécutée",
     "errorBoundary": {

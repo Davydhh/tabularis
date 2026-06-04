@@ -2964,7 +2964,11 @@ export const Editor = () => {
                 <p className="text-sm">{t("editor.executingQuery")}</p>
               </div>
             ) : activeTab.error ? (
-              <ErrorDisplay error={activeTab.error} t={t} />
+              <ErrorDisplay
+                error={activeTab.error}
+                t={t}
+                originalQuery={activeTab.query}
+              />
             ) : activeTab.result ||
               (activeTab.pendingInsertions &&
                 Object.keys(activeTab.pendingInsertions).length > 0) ? (

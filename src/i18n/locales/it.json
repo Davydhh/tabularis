@@ -798,6 +798,8 @@
     "queryFailed": "Esecuzione query fallita.",
     "showErrorDetails": "Mostra dettagli",
     "hideErrorDetails": "Nascondi dettagli",
+    "showQuery": "Mostra query",
+    "hideQuery": "Nascondi query",
     "showExecutedQuery": "Mostra query eseguita",
     "hideExecutedQuery": "Nascondi query eseguita",
     "errorBoundary": {
