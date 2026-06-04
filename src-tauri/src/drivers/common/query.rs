@@ -376,12 +376,17 @@ fn parse_pagination(query: &str, dialect: PaginationDialect) -> Option<ParsedPag
 /// True for the keyword/value tokens that make up a trailing LIMIT/OFFSET
 /// clause (standard, MySQL comma, and FETCH spellings), so a LIMIT/OFFSET that
 /// appears mid-query is never mistaken for the trailing pagination clause.
+///
+/// The numeric arm accepts digits interleaved with commas so MySQL's
+/// `LIMIT <offset>,<count>` is recognised even when written without spaces
+/// (`LIMIT 0,1`): the tokenizer splits only on whitespace, so the count and
+/// offset arrive glued together as a single `0,1` token.
 fn is_pagination_tail_token(tok: &str) -> bool {
     let upper = tok.to_uppercase();
     matches!(
         upper.as_str(),
         "LIMIT" | "OFFSET" | "BY" | "ROW" | "ROWS" | "ONLY" | "NEXT" | "FIRST" | ","
-    ) || (!tok.is_empty() && tok.trim_end_matches(',').chars().all(|c| c.is_ascii_digit()))
+    ) || (!tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit() || c == ','))
 }
 
 /// Cut the query immediately before its trailing top-level LIMIT/OFFSET clause.
@@ -482,4 +487,29 @@ pub fn build_paginated_query(
     // `LimitClause`'s Display renders a leading space (it is meant to follow a
     // preceding clause), so concatenate without inserting another one.
     format!("{}{}", base, clause)
+}
+
+/// Sentinel that separates a human error message from the actual SQL that
+/// produced it inside a single error string. The leading code point is from
+/// the Unicode private-use area, so it never appears in real SQL text or DB
+/// driver error messages and survives JSON/IPC transport unescaped — letting
+/// the frontend split on this marker without colliding with the `\n\n`
+/// brief/detail convention. Must stay in sync with the parser in
+/// `src/components/ui/ErrorDisplay.tsx`.
+pub const EXECUTED_QUERY_MARKER: &str = "\u{E000}__TABULARIS_EXECUTED_QUERY__";
+
+/// Appends the executed SQL to a DB error message so the UI can show the user
+/// the exact statement that failed. This matters when pagination rewrote the
+/// query (appending `LIMIT`/`OFFSET`): the database complains about clauses the
+/// user never typed, and without the rewritten text the error is baffling.
+///
+/// When `executed` matches `original` (ignoring surrounding whitespace) the
+/// error is returned unchanged — echoing back the query the user can already
+/// see would only add noise.
+pub fn annotate_error_with_query(err: String, executed: &str, original: &str) -> String {
+    if executed.trim() == original.trim() {
+        err
+    } else {
+        format!("{err}{EXECUTED_QUERY_MARKER}{executed}")
+    }
 }

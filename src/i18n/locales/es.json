@@ -813,6 +813,8 @@
     "queryFailed": "La consulta falló.",
     "showErrorDetails": "Mostrar detalles",
     "hideErrorDetails": "Ocultar detalles",
+    "showExecutedQuery": "Mostrar consulta ejecutada",
+    "hideExecutedQuery": "Ocultar consulta ejecutada",
     "errorBoundary": {
       "title": "El editor falló inesperadamente",
       "description": "Algo en el editor no pudo renderizarse. El error se muestra abajo — vuelve a intentarlo o regresa a tus conexiones.",

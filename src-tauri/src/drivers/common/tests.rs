@@ -1,9 +1,34 @@
 use super::{
-    build_paginated_query, decode_blob_wire_format, encode_blob, encode_blob_full, i64_to_json,
-    is_explainable_query, is_select_query, parse_unsafe_bigint_string, strip_leading_sql_comments,
-    strip_limit_offset, u64_to_json, PaginationDialect, DEFAULT_MAX_BLOB_SIZE, JS_MAX_SAFE_INTEGER,
-    JS_MAX_SAFE_UINT, MAX_BLOB_PREVIEW_SIZE,
+    annotate_error_with_query, build_paginated_query, decode_blob_wire_format, encode_blob,
+    encode_blob_full, i64_to_json, is_explainable_query, is_select_query, parse_unsafe_bigint_string,
+    strip_leading_sql_comments, strip_limit_offset, u64_to_json, PaginationDialect,
+    DEFAULT_MAX_BLOB_SIZE, EXECUTED_QUERY_MARKER, JS_MAX_SAFE_INTEGER, JS_MAX_SAFE_UINT,
+    MAX_BLOB_PREVIEW_SIZE,
 };
+
+#[test]
+fn test_annotate_error_appends_rewritten_query() {
+    let err = "syntax error near 'LIMIT 1 OFFSET 0'".to_string();
+    let executed = "SELECT * FROM t LIMIT 1 OFFSET 0";
+    let original = "SELECT * FROM t";
+    let out = annotate_error_with_query(err.clone(), executed, original);
+
+    let (message, query) = out
+        .split_once(EXECUTED_QUERY_MARKER)
+        .expect("marker should be present when the query was rewritten");
+    assert_eq!(message, err);
+    assert_eq!(query, executed);
+}
+
+#[test]
+fn test_annotate_error_noop_when_query_unchanged() {
+    let err = "permission denied".to_string();
+    let q = "SELECT * FROM t";
+    // Identical query (modulo surrounding whitespace) must not be appended.
+    let out = annotate_error_with_query(err.clone(), "  SELECT * FROM t  ", q);
+    assert_eq!(out, err);
+    assert!(!out.contains(EXECUTED_QUERY_MARKER));
+}
 
 #[test]
 fn test_decode_blob_wire_format_valid() {
@@ -419,6 +444,17 @@ fn test_build_paginated_query_mysql_comma_limit() {
     let q = "SELECT * FROM t LIMIT 10, 5";
     let result = build_paginated_query(q, 100, 1, PaginationDialect::MySql);
     assert_eq!(result, "SELECT * FROM t LIMIT 5 OFFSET 10");
+}
+
+#[test]
+fn test_build_paginated_query_mysql_comma_limit_no_space() {
+    // No space between offset and count (`LIMIT 0,1`). The whitespace tokenizer
+    // keeps `0,1` as a single token, so the trailing clause must still be
+    // recognised and stripped rather than producing the invalid
+    // `... LIMIT 0,1 LIMIT 1 OFFSET 0`.
+    let q = "select * from accounts LIMIT 0,1";
+    let result = build_paginated_query(q, 100, 1, PaginationDialect::MySql);
+    assert_eq!(result, "select * from accounts LIMIT 1 OFFSET 0");
 }
 
 #[test]

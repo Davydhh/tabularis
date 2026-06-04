@@ -827,7 +827,11 @@ async fn exec_on_pg_client(
         client
             .query_raw(&final_query, &pg_params)
             .await
-            .map_err(|e| format_pg_error(&e))?
+            .map_err(|e| crate::drivers::common::annotate_error_with_query(
+                format_pg_error(&e),
+                &final_query,
+                query
+            ))?
     );
 
     let mut columns: Vec<String> = Vec::new();
@@ -856,7 +860,13 @@ async fn exec_on_pg_client(
                 }
                 json_rows.push(json_row);
             }
-            Err(e) => return Err(format_pg_error(&e)),
+            Err(e) => {
+                return Err(crate::drivers::common::annotate_error_with_query(
+                    format_pg_error(&e),
+                    &final_query,
+                    query,
+                ))
+            }
         }
     }
 

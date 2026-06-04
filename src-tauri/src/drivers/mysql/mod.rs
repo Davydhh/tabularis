@@ -999,7 +999,13 @@ async fn exec_on_mysql_conn(
                     }
                     json_rows.push(json_row);
                 }
-                Err(e) => return Err(e.to_string()),
+                Err(e) => {
+                    return Err(crate::drivers::common::annotate_error_with_query(
+                        e.to_string(),
+                        &final_query,
+                        query,
+                    ))
+                }
             }
         }
     } // rows_stream dropped here — conn borrow released
