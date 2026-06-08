@@ -990,7 +990,22 @@
       "redo": "Ripeti",
       "history": {
         "title": "Cronologia modifiche",
-        "cellCount": "{{n}} celle"
+        "change": {
+          "initial": "Versione iniziale",
+          "editCell": "Modificata cella {{n}}",
+          "addSql": "Aggiunta cella SQL {{n}}",
+          "addMarkdown": "Aggiunta cella Markdown {{n}}",
+          "deleteCell": "Eliminata cella {{n}}",
+          "reorder": "Celle riordinate",
+          "renameCell": "Rinominata cella {{n}}",
+          "schemaCell": "Database cambiato (cella {{n}})",
+          "chartCell": "Grafico cambiato (cella {{n}})",
+          "parallelCell": "Parallelo commutato (cella {{n}})",
+          "collapse": "Celle compresse/espanse",
+          "params": "Parametri modificati",
+          "stopOnError": "Stop on error commutato",
+          "other": "Notebook modificato"
+        }
       }
     },
     "querySelection": {

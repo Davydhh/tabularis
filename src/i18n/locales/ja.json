@@ -1000,7 +1000,22 @@
       "redo": "やり直す",
       "history": {
         "title": "編集履歴",
-        "cellCount": "{{n}} セル"
+        "change": {
+          "initial": "初期バージョン",
+          "editCell": "セル {{n}} を編集",
+          "addSql": "SQL セル {{n}} を追加",
+          "addMarkdown": "Markdown セル {{n}} を追加",
+          "deleteCell": "セル {{n}} を削除",
+          "reorder": "セルを並べ替え",
+          "renameCell": "セル {{n}} の名前を変更",
+          "schemaCell": "データベースを変更（セル {{n}}）",
+          "chartCell": "チャートを変更（セル {{n}}）",
+          "parallelCell": "並列を切り替え（セル {{n}}）",
+          "collapse": "セルを折りたたみ/展開",
+          "params": "パラメータを変更",
+          "stopOnError": "エラー時に停止を切り替え",
+          "other": "ノートブックを編集"
+        }
       }
     },
     "querySelection": {

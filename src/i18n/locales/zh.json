@@ -954,7 +954,22 @@
       "redo": "重做",
       "history": {
         "title": "编辑历史",
-        "cellCount": "{{n}} 个单元格"
+        "change": {
+          "initial": "初始版本",
+          "editCell": "编辑了单元格 {{n}}",
+          "addSql": "添加了 SQL 单元格 {{n}}",
+          "addMarkdown": "添加了 Markdown 单元格 {{n}}",
+          "deleteCell": "删除了单元格 {{n}}",
+          "reorder": "重新排序单元格",
+          "renameCell": "重命名了单元格 {{n}}",
+          "schemaCell": "更改了数据库（单元格 {{n}}）",
+          "chartCell": "更改了图表（单元格 {{n}}）",
+          "parallelCell": "切换了并行（单元格 {{n}}）",
+          "collapse": "折叠/展开单元格",
+          "params": "更改了参数",
+          "stopOnError": "切换了出错时停止",
+          "other": "编辑了笔记本"
+        }
       }
     },
     "querySelection": {

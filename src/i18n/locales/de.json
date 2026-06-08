@@ -988,7 +988,22 @@
       "redo": "Wiederholen",
       "history": {
         "title": "Bearbeitungsverlauf",
-        "cellCount": "{{n}} Zellen"
+        "change": {
+          "initial": "Erste Version",
+          "editCell": "Zelle {{n}} bearbeitet",
+          "addSql": "SQL-Zelle {{n}} hinzugefügt",
+          "addMarkdown": "Markdown-Zelle {{n}} hinzugefügt",
+          "deleteCell": "Zelle {{n}} gelöscht",
+          "reorder": "Zellen neu angeordnet",
+          "renameCell": "Zelle {{n}} umbenannt",
+          "schemaCell": "Datenbank geändert (Zelle {{n}})",
+          "chartCell": "Diagramm geändert (Zelle {{n}})",
+          "parallelCell": "Parallel umgeschaltet (Zelle {{n}})",
+          "collapse": "Zellen ein-/ausgeklappt",
+          "params": "Parameter geändert",
+          "stopOnError": "Bei Fehler stoppen umgeschaltet",
+          "other": "Notebook bearbeitet"
+        }
       }
     },
     "querySelection": {

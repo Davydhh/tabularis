@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { History, X, Check } from "lucide-react";
 import type { NotebookState } from "../../types/notebook";
+import { describeChange, type ChangeDescriptor } from "../../utils/notebookUndo";
 
 interface NotebookHistoryPanelProps {
   /** Full timeline, oldest first. */
@@ -9,13 +10,6 @@ interface NotebookHistoryPanelProps {
   currentIndex: number;
   onJump: (index: number) => void;
   onClose: () => void;
-}
-
-/** Short preview of a notebook version for the history list. */
-function previewOf(state: NotebookState): string {
-  const firstWithContent = state.cells.find((c) => c.content.trim().length > 0);
-  const snippet = firstWithContent?.content.trim().split("\n")[0]?.slice(0, 60);
-  return snippet || "—";
 }
 
 export function NotebookHistoryPanel({
@@ -44,6 +38,14 @@ export function NotebookHistoryPanel({
     };
   }, [onClose]);
 
+  const labelFor = (d: ChangeDescriptor): string =>
+    t(`editor.notebook.history.change.${d.kind}`, { n: d.n ?? 0 });
+
+  const descriptorAt = (index: number): ChangeDescriptor =>
+    index === 0
+      ? { kind: "initial" }
+      : describeChange(states[index - 1], states[index]);
+
   return (
     <div
       ref={panelRef}
@@ -65,10 +67,11 @@ export function NotebookHistoryPanel({
       <div className="overflow-y-auto py-1">
         {/* Newest first */}
         {states
-          .map((state, index) => ({ state, index }))
+          .map((_, index) => index)
           .reverse()
-          .map(({ state, index }) => {
+          .map((index) => {
             const isCurrent = index === currentIndex;
+            const descriptor = descriptorAt(index);
             return (
               <button
                 key={index}
@@ -89,14 +92,14 @@ export function NotebookHistoryPanel({
                   )}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[12px] font-mono">
-                    {previewOf(state)}
+                  <span className="block truncate text-[12px]">
+                    {labelFor(descriptor)}
                   </span>
-                  <span className="block text-[10px] text-muted">
-                    {t("editor.notebook.history.cellCount", {
-                      n: state.cells.length,
-                    })}
-                  </span>
+                  {descriptor.detail && (
+                    <span className="block truncate text-[10px] text-muted font-mono">
+                      {descriptor.detail}
+                    </span>
+                  )}
                 </span>
               </button>
             );

@@ -988,7 +988,22 @@
       "redo": "Rétablir",
       "history": {
         "title": "Historique des modifications",
-        "cellCount": "{{n}} cellules"
+        "change": {
+          "initial": "Version initiale",
+          "editCell": "Cellule {{n}} modifiée",
+          "addSql": "Cellule SQL {{n}} ajoutée",
+          "addMarkdown": "Cellule Markdown {{n}} ajoutée",
+          "deleteCell": "Cellule {{n}} supprimée",
+          "reorder": "Cellules réordonnées",
+          "renameCell": "Cellule {{n}} renommée",
+          "schemaCell": "Base de données modifiée (cellule {{n}})",
+          "chartCell": "Graphique modifié (cellule {{n}})",
+          "parallelCell": "Parallèle basculé (cellule {{n}})",
+          "collapse": "Cellules réduites/développées",
+          "params": "Paramètres modifiés",
+          "stopOnError": "Arrêt en cas d'erreur basculé",
+          "other": "Notebook modifié"
+        }
       }
     },
     "querySelection": {

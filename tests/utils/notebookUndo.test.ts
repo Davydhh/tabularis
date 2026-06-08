@@ -8,9 +8,11 @@ import {
   redo,
   timeline,
   jumpTo,
+  describeChange,
   HISTORY_LIMIT,
   COALESCE_MS,
 } from "../../src/utils/notebookUndo";
+import type { NotebookCell } from "../../src/types/notebook";
 
 function state(content: string, extra: Partial<NotebookState> = {}): NotebookState {
   return { cells: [{ id: "c1", type: "sql", content }], ...extra };
@@ -187,6 +189,69 @@ describe("notebookUndo", () => {
       expect(jumpTo(h, state("c"), 2)).toBeNull(); // current
       expect(jumpTo(h, state("c"), -1)).toBeNull();
       expect(jumpTo(h, state("c"), 99)).toBeNull();
+    });
+  });
+
+  describe("describeChange", () => {
+    const cell = (id: string, over: Partial<NotebookCell> = {}): NotebookCell => ({
+      id,
+      type: "sql",
+      content: "",
+      ...over,
+    });
+    const ns = (cells: NotebookCell[], over: Partial<typeof import("../../src/types/notebook")> = {}): NotebookState =>
+      ({ cells, ...(over as object) }) as NotebookState;
+
+    it("detects an edited cell with a preview of the new content", () => {
+      const prev = ns([cell("a", { content: "SELECT 1" })]);
+      const next = ns([cell("a", { content: "SELECT 2\n-- more" })]);
+      expect(describeChange(prev, next)).toMatchObject({
+        kind: "editCell",
+        n: 1,
+        detail: "SELECT 2",
+      });
+    });
+
+    it("detects an added SQL cell at its position", () => {
+      const prev = ns([cell("a")]);
+      const next = ns([cell("a"), cell("b", { content: "NEW" })]);
+      expect(describeChange(prev, next)).toMatchObject({ kind: "addSql", n: 2 });
+    });
+
+    it("detects an added markdown cell", () => {
+      const prev = ns([cell("a")]);
+      const next = ns([cell("a"), cell("b", { type: "markdown" })]);
+      expect(describeChange(prev, next).kind).toBe("addMarkdown");
+    });
+
+    it("detects a deleted cell by its old position", () => {
+      const prev = ns([cell("a"), cell("b"), cell("c")]);
+      const next = ns([cell("a"), cell("c")]);
+      expect(describeChange(prev, next)).toMatchObject({
+        kind: "deleteCell",
+        n: 2,
+      });
+    });
+
+    it("detects reordering", () => {
+      const prev = ns([cell("a"), cell("b")]);
+      const next = ns([cell("b"), cell("a")]);
+      expect(describeChange(prev, next).kind).toBe("reorder");
+    });
+
+    it("detects rename, schema, params and stop-on-error", () => {
+      expect(
+        describeChange(ns([cell("a")]), ns([cell("a", { name: "Q1" })])),
+      ).toMatchObject({ kind: "renameCell", n: 1, detail: "Q1" });
+      expect(
+        describeChange(ns([cell("a")]), ns([cell("a", { schema: "public" })])),
+      ).toMatchObject({ kind: "schemaCell", n: 1 });
+      expect(
+        describeChange(ns([cell("a")]), ns([cell("a")], { params: [{ name: "p", value: "1" }] } as never)),
+      ).toMatchObject({ kind: "params" });
+      expect(
+        describeChange(ns([cell("a")]), ns([cell("a")], { stopOnError: true } as never)),
+      ).toMatchObject({ kind: "stopOnError" });
     });
   });
 });

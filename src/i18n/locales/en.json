@@ -1009,7 +1009,22 @@
       "redo": "Redo",
       "history": {
         "title": "Edit history",
-        "cellCount": "{{n}} cells"
+        "change": {
+          "initial": "Initial version",
+          "editCell": "Edited cell {{n}}",
+          "addSql": "Added SQL cell {{n}}",
+          "addMarkdown": "Added Markdown cell {{n}}",
+          "deleteCell": "Deleted cell {{n}}",
+          "reorder": "Reordered cells",
+          "renameCell": "Renamed cell {{n}}",
+          "schemaCell": "Changed database (cell {{n}})",
+          "chartCell": "Changed chart (cell {{n}})",
+          "parallelCell": "Toggled parallel (cell {{n}})",
+          "collapse": "Collapsed/expanded cells",
+          "params": "Changed parameters",
+          "stopOnError": "Toggled stop on error",
+          "other": "Edited notebook"
+        }
       }
     },
     "querySelection": {
