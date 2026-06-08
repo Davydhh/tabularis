@@ -102,7 +102,7 @@ export function NotebookView({
     if (!tab.notebookId || notebook) return;
 
     let cancelled = false;
-    loadNotebook(tab.notebookId).then((state) => {
+    loadNotebook(tab.notebookId, connectionId).then((state) => {
       if (cancelled) return;
       setNotebook(state);
       cellsRef.current = state.cells;
@@ -427,7 +427,7 @@ export function NotebookView({
       };
 
       // Create a new notebook file for the imported content
-      const { notebookId: newId } = await createNotebookFromState(title, importedState);
+      const { notebookId: newId } = await createNotebookFromState(title, importedState, connectionId);
 
       // Update the tab to point to the new notebook
       updateTab(tab.id, { notebookId: newId, title });
@@ -440,7 +440,7 @@ export function NotebookView({
     } catch {
       showAlert(t("editor.notebook.invalidFile"), { kind: "error" });
     }
-  }, [tab.id, updateTab, showAlert, t]);
+  }, [tab.id, updateTab, showAlert, t, connectionId]);
 
   // Drag & Drop handlers
   const handleDragStart = useCallback(

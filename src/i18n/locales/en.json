@@ -171,7 +171,19 @@
     "dateGroupYesterday": "Yesterday",
     "dateGroupThisWeek": "This Week",
     "dateGroupThisMonth": "This Month",
-    "dateGroupOlder": "Older"
+    "dateGroupOlder": "Older",
+    "notebooks": {
+      "tab": "Notebooks",
+      "search": "Search notebooks",
+      "refresh": "Refresh",
+      "empty": "No saved notebooks yet.",
+      "noSearchResults": "No notebooks match your search.",
+      "open": "Open",
+      "rename": "Rename",
+      "delete": "Delete",
+      "deleteConfirm": "Delete notebook \"{{title}}\"? This cannot be undone.",
+      "renamePlaceholder": "Notebook name"
+    }
   },
   "mcp": {
     "title": "MCP Server Integration",
