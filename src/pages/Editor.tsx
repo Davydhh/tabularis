@@ -81,7 +81,6 @@ import {
 import { formatDuration } from "../utils/formatTime";
 import { SqlEditorWrapper } from "../components/ui/SqlEditorWrapper";
 import { NotebookView } from "../components/notebook/NotebookView";
-import { extractSqlFromCells } from "../utils/notebook";
 import { createNotebook, renameNotebook } from "../utils/notebookStore";
 import { registerSqlAutocomplete } from "../utils/autocomplete";
 import { type OnMount, type Monaco } from "@monaco-editor/react";
@@ -257,18 +256,6 @@ export const Editor = () => {
     (tabId: string) => {
       const tab = tabsRef.current.find((t) => t.id === tabId);
       if (!tab) return;
-
-      // Notebook: extract all SQL cells
-      if (tab.type === "notebook" && tab.notebookState) {
-        const allSql = extractSqlFromCells(tab.notebookState.cells);
-        addTab({
-          type: "console",
-          title: `Console - ${tab.title}`,
-          query: allSql,
-          connectionId: tab.connectionId,
-        });
-        return;
-      }
 
       const effectiveSchema =
         activeCapabilities?.schemas === true ? tab.schema : undefined;
@@ -3515,8 +3502,9 @@ export const Editor = () => {
                   },
                 ]
               : []),
-            ...(tabs.find((t) => t.id === tabContextMenu.tabId)?.type !==
-            "console"
+            ...(!["console", "notebook", "query_builder"].includes(
+              tabs.find((t) => t.id === tabContextMenu.tabId)?.type ?? "",
+            )
               ? [
                   {
                     label: t("editor.convertToConsole"),
