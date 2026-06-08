@@ -983,7 +983,9 @@
       "editCellName": "Zellnamen bearbeiten",
       "aiGenerateName": "Namen mit KI generieren",
       "generatingName": "Name wird generiert...",
-      "aiGenerateOutlineNames": "Namen für unbenannte Zellen mit KI generieren"
+      "aiGenerateOutlineNames": "Namen für unbenannte Zellen mit KI generieren",
+      "undo": "Rückgängig",
+      "redo": "Wiederholen"
     },
     "querySelection": {
       "title": "Abfrage zum Ausführen auswählen",

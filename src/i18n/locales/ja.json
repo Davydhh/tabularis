@@ -995,7 +995,9 @@
       "editCellName": "セル名を編集",
       "aiGenerateName": "AI で名前を生成",
       "generatingName": "名前を生成中...",
-      "aiGenerateOutlineNames": "AI で未命名セルの名前を生成"
+      "aiGenerateOutlineNames": "AI で未命名セルの名前を生成",
+      "undo": "元に戻す",
+      "redo": "やり直す"
     },
     "querySelection": {
       "title": "実行するクエリを選択",

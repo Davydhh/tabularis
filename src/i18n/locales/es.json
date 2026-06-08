@@ -978,7 +978,9 @@
       "editCellName": "Editar nombre de celda",
       "aiGenerateName": "Generar nombre con IA",
       "generatingName": "Generando nombre...",
-      "aiGenerateOutlineNames": "Generar nombres para celdas sin nombre con IA"
+      "aiGenerateOutlineNames": "Generar nombres para celdas sin nombre con IA",
+      "undo": "Deshacer",
+      "redo": "Rehacer"
     },
     "querySelection": {
       "title": "Seleccionar consulta a ejecutar",

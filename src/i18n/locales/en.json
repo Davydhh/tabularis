@@ -1004,7 +1004,9 @@
       "editCellName": "Edit cell name",
       "aiGenerateName": "Generate name with AI",
       "generatingName": "Generating name...",
-      "aiGenerateOutlineNames": "Generate names for unnamed cells with AI"
+      "aiGenerateOutlineNames": "Generate names for unnamed cells with AI",
+      "undo": "Undo",
+      "redo": "Redo"
     },
     "querySelection": {
       "title": "Select Query to Execute",

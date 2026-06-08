@@ -985,7 +985,9 @@
       "editCellName": "Modifica nome cella",
       "aiGenerateName": "Genera nome con AI",
       "generatingName": "Generazione nome...",
-      "aiGenerateOutlineNames": "Genera nomi per le celle senza nome con AI"
+      "aiGenerateOutlineNames": "Genera nomi per le celle senza nome con AI",
+      "undo": "Annulla",
+      "redo": "Ripeti"
     },
     "querySelection": {
       "title": "Seleziona la query da eseguire",

@@ -2820,6 +2820,7 @@ export const Editor = () => {
                 tab={tab}
                 updateTab={updateTab}
                 connectionId={activeConnectionId || ""}
+                isActive={isActive}
               />
             </div>
           );

@@ -9,6 +9,8 @@ import {
   FileCode,
   ChevronsDownUp,
   ChevronsUpDown,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 
 interface NotebookToolbarProps {
@@ -23,6 +25,10 @@ interface NotebookToolbarProps {
   onToggleStopOnError: () => void;
   onCollapseAll: () => void;
   onExpandAll: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 function ToolbarButton({
@@ -69,6 +75,10 @@ export function NotebookToolbar({
   onToggleStopOnError,
   onCollapseAll,
   onExpandAll,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
 }: NotebookToolbarProps) {
   const { t } = useTranslation();
 
@@ -96,6 +106,25 @@ export function NotebookToolbar({
           MD
         </button>
       </div>
+
+      <Separator />
+
+      <ToolbarGroup>
+        <ToolbarButton
+          onClick={onUndo}
+          disabled={!canUndo}
+          title={t("editor.notebook.undo")}
+        >
+          <Undo2 size={14} />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={onRedo}
+          disabled={!canRedo}
+          title={t("editor.notebook.redo")}
+        >
+          <Redo2 size={14} />
+        </ToolbarButton>
+      </ToolbarGroup>
 
       <Separator />
 

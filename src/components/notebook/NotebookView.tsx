@@ -37,6 +37,13 @@ import {
 } from "../../utils/notebookHistory";
 import { exportNotebookToHtml } from "../../utils/notebookHtmlExport";
 import {
+  createHistory,
+  recordEdit,
+  undo as undoHistory,
+  redo as redoHistory,
+  type NotebookHistory,
+} from "../../utils/notebookUndo";
+import {
   getNotebookState,
   setNotebookState as storeSetState,
   loadNotebook,
@@ -59,12 +66,15 @@ interface NotebookViewProps {
   tab: Tab;
   updateTab: (id: string, partial: Partial<Tab>) => void;
   connectionId: string;
+  /** Whether this notebook tab is the active one (gates keyboard shortcuts). */
+  isActive: boolean;
 }
 
 export function NotebookView({
   tab,
   updateTab,
   connectionId,
+  isActive,
 }: NotebookViewProps) {
   const { t } = useTranslation();
   const { activeSchema, activeCapabilities, selectedDatabases } = useDatabase();
@@ -92,10 +102,32 @@ export function NotebookView({
   const notebookIdRef = useRef(tab.notebookId);
   const runCellRef = useRef<(cellId: string) => Promise<void>>(async () => {});
 
-  // Keep ref in sync
+  // Undo/redo history (autosave means edits are otherwise irreversible).
+  const notebookRef = useRef<NotebookState | null>(notebook);
+  const historyRef = useRef<NotebookHistory>(createHistory());
+  const isActiveRef = useRef(isActive);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
+  // Keep refs in sync
   useEffect(() => {
     notebookIdRef.current = tab.notebookId;
   }, [tab.notebookId]);
+
+  useEffect(() => {
+    notebookRef.current = notebook;
+  }, [notebook]);
+
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
+
+  // Reset undo/redo history (e.g. after importing a different notebook).
+  const resetHistory = useCallback(() => {
+    historyRef.current = createHistory();
+    setCanUndo(false);
+    setCanRedo(false);
+  }, []);
 
   // Load notebook from disk when not already cached
   useEffect(() => {
@@ -130,6 +162,7 @@ export function NotebookView({
         params?: NotebookParam[];
       },
     ) => {
+      const prevState = notebookRef.current;
       cellsRef.current = newCells;
       const newState: NotebookState = {
         cells: newCells,
@@ -139,13 +172,56 @@ export function NotebookView({
             : notebook?.stopOnError,
         params: extraState?.params !== undefined ? extraState.params : notebook?.params,
       };
+      notebookRef.current = newState;
       setNotebook(newState);
+      if (prevState) {
+        historyRef.current = recordEdit(
+          historyRef.current,
+          prevState,
+          newState,
+          Date.now(),
+        );
+        setCanUndo(historyRef.current.past.length > 0);
+        setCanRedo(historyRef.current.future.length > 0);
+      }
       if (notebookIdRef.current) {
         storeSetState(notebookIdRef.current, newState);
       }
     },
     [notebook?.stopOnError, notebook?.params],
   );
+
+  /** Apply a state from the history without recording a new entry. */
+  const applyHistoryState = useCallback((state: NotebookState) => {
+    cellsRef.current = state.cells;
+    notebookRef.current = state;
+    setNotebook(state);
+    if (notebookIdRef.current) {
+      storeSetState(notebookIdRef.current, state);
+    }
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    const current = notebookRef.current;
+    if (!current) return;
+    const step = undoHistory(historyRef.current, current);
+    if (!step) return;
+    historyRef.current = step.history;
+    applyHistoryState(step.state);
+    setCanUndo(step.history.past.length > 0);
+    setCanRedo(step.history.future.length > 0);
+  }, [applyHistoryState]);
+
+  const handleRedo = useCallback(() => {
+    const current = notebookRef.current;
+    if (!current) return;
+    const step = redoHistory(historyRef.current, current);
+    if (!step) return;
+    historyRef.current = step.history;
+    applyHistoryState(step.state);
+    setCanUndo(step.history.past.length > 0);
+    setCanRedo(step.history.future.length > 0);
+  }, [applyHistoryState]);
 
   const updateCell = useCallback(
     (cellId: string, partial: Partial<NotebookCell>) => {
@@ -432,15 +508,17 @@ export function NotebookView({
       // Update the tab to point to the new notebook
       updateTab(tab.id, { notebookId: newId, title });
 
-      // Update local state
+      // Update local state — a different notebook now, so drop its history.
       setNotebook(importedState);
+      notebookRef.current = importedState;
       cellsRef.current = importedCells;
+      resetHistory();
 
       showAlert(t("editor.notebook.importSuccess"), { kind: "info" });
     } catch {
       showAlert(t("editor.notebook.invalidFile"), { kind: "error" });
     }
-  }, [tab.id, updateTab, showAlert, t, connectionId]);
+  }, [tab.id, updateTab, showAlert, t, connectionId, resetHistory]);
 
   // Drag & Drop handlers
   const handleDragStart = useCallback(
@@ -514,17 +592,46 @@ export function NotebookView({
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
 
-  // Keyboard shortcut: Ctrl+Shift+Enter → Run All
+  // Keyboard shortcuts (only for the active notebook tab):
+  // Ctrl+Shift+Enter → Run All, Cmd/Ctrl+Z → Undo, Cmd/Ctrl+Shift+Z / Ctrl+Y → Redo.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isActiveRef.current) return;
+
       if (matchesShortcut(e, "notebook_run_all")) {
         e.preventDefault();
         runAll();
+        return;
+      }
+
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key !== "z" && key !== "y") return;
+
+      // Defer to a focused cell editor / input so their own undo keeps working.
+      const el = document.activeElement as HTMLElement | null;
+      if (
+        el &&
+        (el.closest(".monaco-editor") ||
+          el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (key === "y" || (key === "z" && e.shiftKey)) {
+        e.preventDefault();
+        handleRedo();
+      } else if (key === "z") {
+        e.preventDefault();
+        handleUndo();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [matchesShortcut, runAll]);
+  }, [matchesShortcut, runAll, handleUndo, handleRedo]);
 
   const collapseAll = useCallback(() => {
     updateNotebook(cellsRef.current.map((c) => ({ ...c, isCollapsed: true })));
@@ -554,6 +661,10 @@ export function NotebookView({
     onToggleStopOnError: toggleStopOnError,
     onCollapseAll: collapseAll,
     onExpandAll: expandAll,
+    onUndo: handleUndo,
+    onRedo: handleRedo,
+    canUndo,
+    canRedo,
   };
 
   // Loading state

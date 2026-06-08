@@ -949,7 +949,9 @@
       "editCellName": "编辑单元格名称",
       "aiGenerateName": "使用 AI 生成名称",
       "generatingName": "正在生成名称...",
-      "aiGenerateOutlineNames": "使用 AI 为未命名单元格生成名称"
+      "aiGenerateOutlineNames": "使用 AI 为未命名单元格生成名称",
+      "undo": "撤销",
+      "redo": "重做"
     },
     "querySelection": {
       "title": "选择要执行的查询",
