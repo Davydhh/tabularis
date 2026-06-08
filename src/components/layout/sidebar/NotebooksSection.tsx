@@ -9,6 +9,7 @@ import {
   Trash2,
   Download,
   Upload,
+  FileCode,
 } from "lucide-react";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
@@ -25,6 +26,7 @@ import {
   serializeNotebook,
   deserializeNotebook,
 } from "../../../utils/notebookFile";
+import { exportNotebookToHtml } from "../../../utils/notebookHtmlExport";
 import { ConfirmModal } from "../../modals/ConfirmModal";
 import { ContextMenu, type ContextMenuItem } from "../../ui/ContextMenu";
 import type { NotebookMetadata } from "../../../types/notebook";
@@ -147,6 +149,24 @@ export function NotebooksSection({
     }
   };
 
+  const handleExportHtml = async (nb: NotebookMetadata) => {
+    if (!connectionId) return;
+    try {
+      const state = await loadNotebook(nb.id, connectionId);
+      const html = exportNotebookToHtml(nb.title, state.cells);
+      const safeName = nb.title.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const target = await save({
+        defaultPath: `${safeName}.html`,
+        filters: [{ name: "HTML", extensions: ["html"] }],
+      });
+      if (!target) return;
+      await writeTextFile(target, html);
+      showAlert(t("editor.notebook.exportSuccess"), { kind: "info" });
+    } catch (e) {
+      showAlert(String(e), { kind: "error", title: t("common.error") });
+    }
+  };
+
   const handleImport = async () => {
     if (!connectionId) return;
     const filePath = await open({
@@ -182,6 +202,11 @@ export function NotebooksSection({
       label: t("editor.notebook.export"),
       icon: Download,
       action: () => handleExport(nb),
+    },
+    {
+      label: t("editor.notebook.exportHtml"),
+      icon: FileCode,
+      action: () => handleExportHtml(nb),
     },
     {
       label: t("editor.notebook.import"),

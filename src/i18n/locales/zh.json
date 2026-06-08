@@ -157,7 +157,19 @@
     "dateGroupYesterday": "昨天",
     "dateGroupThisWeek": "本周",
     "dateGroupThisMonth": "本月",
-    "dateGroupOlder": "更早"
+    "dateGroupOlder": "更早",
+    "notebooks": {
+      "tab": "笔记本",
+      "search": "搜索笔记本",
+      "refresh": "刷新",
+      "empty": "暂无已保存的笔记本。",
+      "noSearchResults": "没有匹配的笔记本。",
+      "open": "打开",
+      "rename": "重命名",
+      "delete": "删除",
+      "deleteConfirm": "删除笔记本“{{title}}”？此操作无法撤销。",
+      "renamePlaceholder": "笔记本名称"
+    }
   },
   "mcp": {
     "title": "MCP 服务器集成",

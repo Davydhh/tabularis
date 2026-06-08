@@ -171,7 +171,19 @@
     "dateGroupYesterday": "Вчера",
     "dateGroupThisWeek": "На этой неделе",
     "dateGroupThisMonth": "В этом месяце",
-    "dateGroupOlder": "Ранее"
+    "dateGroupOlder": "Ранее",
+    "notebooks": {
+      "tab": "Блокноты",
+      "search": "Поиск блокнотов",
+      "refresh": "Обновить",
+      "empty": "Сохранённых блокнотов пока нет.",
+      "noSearchResults": "Нет блокнотов, соответствующих запросу.",
+      "open": "Открыть",
+      "rename": "Переименовать",
+      "delete": "Удалить",
+      "deleteConfirm": "Удалить блокнот «{{title}}»? Это действие нельзя отменить.",
+      "renamePlaceholder": "Имя блокнота"
+    }
   },
   "mcp": {
     "title": "Интеграция MCP-сервера",

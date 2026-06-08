@@ -158,7 +158,19 @@
     "dateGroupYesterday": "Ayer",
     "dateGroupThisWeek": "Esta Semana",
     "dateGroupThisMonth": "Este Mes",
-    "dateGroupOlder": "Anteriores"
+    "dateGroupOlder": "Anteriores",
+    "notebooks": {
+      "tab": "Notebooks",
+      "search": "Buscar notebooks",
+      "refresh": "Actualizar",
+      "empty": "Aún no hay notebooks guardados.",
+      "noSearchResults": "Ningún notebook coincide con tu búsqueda.",
+      "open": "Abrir",
+      "rename": "Renombrar",
+      "delete": "Eliminar",
+      "deleteConfirm": "¿Eliminar el notebook \"{{title}}\"? Esta acción no se puede deshacer.",
+      "renamePlaceholder": "Nombre del notebook"
+    }
   },
   "mcp": {
     "title": "Integración del Servidor MCP",

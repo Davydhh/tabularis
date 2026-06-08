@@ -158,7 +158,19 @@
     "dateGroupYesterday": "Gestern",
     "dateGroupThisWeek": "Diese Woche",
     "dateGroupThisMonth": "Diesen Monat",
-    "dateGroupOlder": "Älter"
+    "dateGroupOlder": "Älter",
+    "notebooks": {
+      "tab": "Notebooks",
+      "search": "Notebooks suchen",
+      "refresh": "Aktualisieren",
+      "empty": "Noch keine gespeicherten Notebooks.",
+      "noSearchResults": "Keine Notebooks entsprechen der Suche.",
+      "open": "Öffnen",
+      "rename": "Umbenennen",
+      "delete": "Löschen",
+      "deleteConfirm": "Notebook \"{{title}}\" löschen? Dies kann nicht rückgängig gemacht werden.",
+      "renamePlaceholder": "Notebook-Name"
+    }
   },
   "mcp": {
     "title": "MCP-Server-Integration",
