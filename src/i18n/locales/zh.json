@@ -951,7 +951,11 @@
       "generatingName": "正在生成名称...",
       "aiGenerateOutlineNames": "使用 AI 为未命名单元格生成名称",
       "undo": "撤销",
-      "redo": "重做"
+      "redo": "重做",
+      "history": {
+        "title": "编辑历史",
+        "cellCount": "{{n}} 个单元格"
+      }
     },
     "querySelection": {
       "title": "选择要执行的查询",

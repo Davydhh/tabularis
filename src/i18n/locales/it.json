@@ -987,7 +987,11 @@
       "generatingName": "Generazione nome...",
       "aiGenerateOutlineNames": "Genera nomi per le celle senza nome con AI",
       "undo": "Annulla",
-      "redo": "Ripeti"
+      "redo": "Ripeti",
+      "history": {
+        "title": "Cronologia modifiche",
+        "cellCount": "{{n}} celle"
+      }
     },
     "querySelection": {
       "title": "Seleziona la query da eseguire",

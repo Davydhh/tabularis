@@ -6,6 +6,8 @@ import {
   recordEdit,
   undo,
   redo,
+  timeline,
+  jumpTo,
   HISTORY_LIMIT,
   COALESCE_MS,
 } from "../../src/utils/notebookUndo";
@@ -137,6 +139,54 @@ describe("notebookUndo", () => {
       const u2 = undo(u1.history, u1.state)!;
       expect(u2.state.cells[0].content).toBe("a");
       expect(undo(u2.history, u2.state)).toBeNull();
+    });
+  });
+
+  describe("timeline / jumpTo", () => {
+    function build() {
+      // past: [a, b], current: c
+      let h = createHistory();
+      h = recordEdit(h, state("a"), state("b"), 1000);
+      h = recordEdit(h, state("b"), state("c"), 1000 + COALESCE_MS + 1);
+      return h;
+    }
+
+    it("timeline lists oldest-first with current at past.length", () => {
+      const h = build();
+      const { states, currentIndex } = timeline(h, state("c"));
+      expect(states.map((s) => s.cells[0].content)).toEqual(["a", "b", "c"]);
+      expect(currentIndex).toBe(2);
+    });
+
+    it("jumps back to an earlier point", () => {
+      const h = build();
+      const step = jumpTo(h, state("c"), 0)!;
+      expect(step.state.cells[0].content).toBe("a");
+      expect(step.history.past).toHaveLength(0);
+      // current ("c") and everything after the target move to the future
+      expect(step.history.future.map((s) => s.cells[0].content)).toEqual([
+        "b",
+        "c",
+      ]);
+    });
+
+    it("jumps forward through the future", () => {
+      const h = build();
+      const back = jumpTo(h, state("c"), 0)!; // now at "a", future [b, c]
+      const fwd = jumpTo(back.history, back.state, 2)!; // jump to "c"
+      expect(fwd.state.cells[0].content).toBe("c");
+      expect(fwd.history.past.map((s) => s.cells[0].content)).toEqual([
+        "a",
+        "b",
+      ]);
+      expect(fwd.history.future).toHaveLength(0);
+    });
+
+    it("returns null for the current index or out-of-range", () => {
+      const h = build();
+      expect(jumpTo(h, state("c"), 2)).toBeNull(); // current
+      expect(jumpTo(h, state("c"), -1)).toBeNull();
+      expect(jumpTo(h, state("c"), 99)).toBeNull();
     });
   });
 });

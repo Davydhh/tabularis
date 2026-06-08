@@ -41,6 +41,8 @@ import {
   recordEdit,
   undo as undoHistory,
   redo as redoHistory,
+  jumpTo as jumpToHistory,
+  timeline as historyTimeline,
   type NotebookHistory,
 } from "../../utils/notebookUndo";
 import {
@@ -56,6 +58,7 @@ import { useSettings } from "../../hooks/useSettings";
 import { useAlert } from "../../hooks/useAlert";
 import { useKeybindings } from "../../hooks/useKeybindings";
 import { NotebookToolbar } from "./NotebookToolbar";
+import { NotebookHistoryPanel } from "./NotebookHistoryPanel";
 import { NotebookCellWrapper } from "./NotebookCellWrapper";
 import { AddCellButton } from "./AddCellButton";
 import { RunAllSummary } from "./RunAllSummary";
@@ -104,10 +107,12 @@ export function NotebookView({
 
   // Undo/redo history (autosave means edits are otherwise irreversible).
   const notebookRef = useRef<NotebookState | null>(notebook);
-  const historyRef = useRef<NotebookHistory>(createHistory());
+  const [history, setHistory] = useState<NotebookHistory>(createHistory);
+  const historyRef = useRef<NotebookHistory>(history);
   const isActiveRef = useRef(isActive);
-  const [canUndo, setCanUndo] = useState(false);
-  const [canRedo, setCanRedo] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const canUndo = history.past.length > 0;
+  const canRedo = history.future.length > 0;
 
   // Keep refs in sync
   useEffect(() => {
@@ -122,12 +127,20 @@ export function NotebookView({
     isActiveRef.current = isActive;
   }, [isActive]);
 
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
+
+  // Commit a new history (updates both the ref used by callbacks and state).
+  const commitHistory = useCallback((next: NotebookHistory) => {
+    historyRef.current = next;
+    setHistory(next);
+  }, []);
+
   // Reset undo/redo history (e.g. after importing a different notebook).
   const resetHistory = useCallback(() => {
-    historyRef.current = createHistory();
-    setCanUndo(false);
-    setCanRedo(false);
-  }, []);
+    commitHistory(createHistory());
+  }, [commitHistory]);
 
   // Load notebook from disk when not already cached
   useEffect(() => {
@@ -175,20 +188,19 @@ export function NotebookView({
       notebookRef.current = newState;
       setNotebook(newState);
       if (prevState) {
-        historyRef.current = recordEdit(
+        const next = recordEdit(
           historyRef.current,
           prevState,
           newState,
           Date.now(),
         );
-        setCanUndo(historyRef.current.past.length > 0);
-        setCanRedo(historyRef.current.future.length > 0);
+        if (next !== historyRef.current) commitHistory(next);
       }
       if (notebookIdRef.current) {
         storeSetState(notebookIdRef.current, newState);
       }
     },
-    [notebook?.stopOnError, notebook?.params],
+    [notebook?.stopOnError, notebook?.params, commitHistory],
   );
 
   /** Apply a state from the history without recording a new entry. */
@@ -206,22 +218,31 @@ export function NotebookView({
     if (!current) return;
     const step = undoHistory(historyRef.current, current);
     if (!step) return;
-    historyRef.current = step.history;
+    commitHistory(step.history);
     applyHistoryState(step.state);
-    setCanUndo(step.history.past.length > 0);
-    setCanRedo(step.history.future.length > 0);
-  }, [applyHistoryState]);
+  }, [applyHistoryState, commitHistory]);
 
   const handleRedo = useCallback(() => {
     const current = notebookRef.current;
     if (!current) return;
     const step = redoHistory(historyRef.current, current);
     if (!step) return;
-    historyRef.current = step.history;
+    commitHistory(step.history);
     applyHistoryState(step.state);
-    setCanUndo(step.history.past.length > 0);
-    setCanRedo(step.history.future.length > 0);
-  }, [applyHistoryState]);
+  }, [applyHistoryState, commitHistory]);
+
+  const handleJump = useCallback(
+    (index: number) => {
+      const current = notebookRef.current;
+      if (!current) return;
+      const step = jumpToHistory(historyRef.current, current, index);
+      if (!step) return;
+      commitHistory(step.history);
+      applyHistoryState(step.state);
+      setShowHistory(false);
+    },
+    [applyHistoryState, commitHistory],
+  );
 
   const updateCell = useCallback(
     (cellId: string, partial: Partial<NotebookCell>) => {
@@ -665,6 +686,8 @@ export function NotebookView({
     onRedo: handleRedo,
     canUndo,
     canRedo,
+    onToggleHistory: () => setShowHistory((v) => !v),
+    historyOpen: showHistory,
   };
 
   // Loading state
@@ -692,9 +715,19 @@ export function NotebookView({
     );
   }
 
+  const historyView = historyTimeline(history, notebook ?? { cells });
+
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full relative">
       <NotebookToolbar {...toolbarProps} />
+      {showHistory && (
+        <NotebookHistoryPanel
+          states={historyView.states}
+          currentIndex={historyView.currentIndex}
+          onJump={handleJump}
+          onClose={() => setShowHistory(false)}
+        />
+      )}
       <div ref={scrollContainerRef} className="flex-1 overflow-auto p-4 space-y-0">
         <ParamsPanel params={params} onParamsChange={handleParamsChange} />
         <NotebookOutline

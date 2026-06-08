@@ -985,7 +985,11 @@
       "generatingName": "Name wird generiert...",
       "aiGenerateOutlineNames": "Namen für unbenannte Zellen mit KI generieren",
       "undo": "Rückgängig",
-      "redo": "Wiederholen"
+      "redo": "Wiederholen",
+      "history": {
+        "title": "Bearbeitungsverlauf",
+        "cellCount": "{{n}} Zellen"
+      }
     },
     "querySelection": {
       "title": "Abfrage zum Ausführen auswählen",

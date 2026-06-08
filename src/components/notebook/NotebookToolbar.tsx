@@ -11,6 +11,7 @@ import {
   ChevronsUpDown,
   Undo2,
   Redo2,
+  History,
 } from "lucide-react";
 
 interface NotebookToolbarProps {
@@ -29,6 +30,8 @@ interface NotebookToolbarProps {
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  onToggleHistory: () => void;
+  historyOpen: boolean;
 }
 
 function ToolbarButton({
@@ -79,6 +82,8 @@ export function NotebookToolbar({
   onRedo,
   canUndo,
   canRedo,
+  onToggleHistory,
+  historyOpen,
 }: NotebookToolbarProps) {
   const { t } = useTranslation();
 
@@ -124,6 +129,18 @@ export function NotebookToolbar({
         >
           <Redo2 size={14} />
         </ToolbarButton>
+        <button
+          type="button"
+          onClick={onToggleHistory}
+          title={t("editor.notebook.history.title")}
+          className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors ${
+            historyOpen
+              ? "bg-surface-secondary text-primary"
+              : "text-secondary hover:text-primary hover:bg-surface-secondary"
+          }`}
+        >
+          <History size={14} />
+        </button>
       </ToolbarGroup>
 
       <Separator />

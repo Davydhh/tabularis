@@ -93,3 +93,41 @@ export function redo(
     state,
   };
 }
+
+/**
+ * The full ordered timeline of states (oldest first), with `current` inserted
+ * at its position. Index `currentIndex` is `history.past.length`.
+ */
+export function timeline(
+  history: NotebookHistory,
+  current: NotebookState,
+): { states: NotebookState[]; currentIndex: number } {
+  return {
+    states: [...history.past, current, ...history.future],
+    currentIndex: history.past.length,
+  };
+}
+
+/**
+ * Jump directly to a position in the {@link timeline}. Generalises undo/redo:
+ * everything before the target becomes the past, everything after the future.
+ * Returns null for the current position or an out-of-range index.
+ */
+export function jumpTo(
+  history: NotebookHistory,
+  current: NotebookState,
+  index: number,
+): HistoryStep | null {
+  const states = [...history.past, current, ...history.future];
+  if (index < 0 || index >= states.length || index === history.past.length) {
+    return null;
+  }
+  return {
+    history: {
+      past: states.slice(0, index),
+      future: states.slice(index + 1),
+      lastEditTime: 0,
+    },
+    state: states[index],
+  };
+}

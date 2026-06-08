@@ -985,7 +985,11 @@
       "generatingName": "Génération du nom...",
       "aiGenerateOutlineNames": "Générer des noms IA pour les cellules sans nom",
       "undo": "Annuler",
-      "redo": "Rétablir"
+      "redo": "Rétablir",
+      "history": {
+        "title": "Historique des modifications",
+        "cellCount": "{{n}} cellules"
+      }
     },
     "querySelection": {
       "title": "Sélectionner la requête à exécuter",

@@ -980,7 +980,11 @@
       "generatingName": "Generando nombre...",
       "aiGenerateOutlineNames": "Generar nombres para celdas sin nombre con IA",
       "undo": "Deshacer",
-      "redo": "Rehacer"
+      "redo": "Rehacer",
+      "history": {
+        "title": "Historial de ediciones",
+        "cellCount": "{{n}} celdas"
+      }
     },
     "querySelection": {
       "title": "Seleccionar consulta a ejecutar",
