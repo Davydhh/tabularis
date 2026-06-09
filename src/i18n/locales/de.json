@@ -933,6 +933,7 @@
     "notebook": {
       "addSqlCell": "SQL-Zelle hinzufügen",
       "addMarkdownCell": "Markdown-Zelle hinzufügen",
+      "addCell": "Hinzufügen",
       "runAll": "Alle ausführen",
       "runAllTooltip": "Alle SQL-Zellen von oben nach unten ausführen",
       "runCell": "Zelle ausführen",

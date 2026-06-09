@@ -588,14 +588,17 @@ export function NotebookView({
   // rAF loop so the list keeps scrolling while the cursor is held near an edge,
   // even when no further dragover events fire (native DnD doesn't auto-scroll).
   const stepAutoScroll = useCallback(() => {
-    const container = scrollContainerRef.current;
-    const speed = autoScrollSpeedRef.current;
-    if (!container || speed === 0) {
-      autoScrollRafRef.current = null;
-      return;
-    }
-    container.scrollTop += speed;
-    autoScrollRafRef.current = requestAnimationFrame(stepAutoScroll);
+    const tick = () => {
+      const container = scrollContainerRef.current;
+      const speed = autoScrollSpeedRef.current;
+      if (!container || speed === 0) {
+        autoScrollRafRef.current = null;
+        return;
+      }
+      container.scrollTop += speed;
+      autoScrollRafRef.current = requestAnimationFrame(tick);
+    };
+    tick();
   }, []);
 
   const handleDragEnd = useCallback(() => {

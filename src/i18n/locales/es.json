@@ -928,6 +928,7 @@
     "notebook": {
       "addSqlCell": "Agregar Celda SQL",
       "addMarkdownCell": "Agregar Celda Markdown",
+      "addCell": "Añadir",
       "runAll": "Ejecutar Todo",
       "runAllTooltip": "Ejecutar todas las celdas SQL de arriba a abajo",
       "runCell": "Ejecutar Celda",

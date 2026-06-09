@@ -930,6 +930,7 @@
     "notebook": {
       "addSqlCell": "Добавить SQL-ячейку",
       "addMarkdownCell": "Добавить Markdown-ячейку",
+      "addCell": "Добавить",
       "runAll": "Запустить все",
       "runAllTooltip": "Выполнить все SQL-ячейки сверху вниз",
       "runCell": "Запустить ячейку",

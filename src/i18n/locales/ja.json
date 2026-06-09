@@ -945,6 +945,7 @@
     "notebook": {
       "addSqlCell": "SQL セルを追加",
       "addMarkdownCell": "Markdown セルを追加",
+      "addCell": "追加",
       "runAll": "すべて実行",
       "runAllTooltip": "上から下へすべての SQL セルを実行",
       "runCell": "セルを実行",

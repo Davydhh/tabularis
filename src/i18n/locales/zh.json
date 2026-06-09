@@ -899,6 +899,7 @@
     "notebook": {
       "addSqlCell": "添加 SQL 单元格",
       "addMarkdownCell": "添加 Markdown 单元格",
+      "addCell": "添加",
       "runAll": "全部运行",
       "runAllTooltip": "从上到下执行所有 SQL 单元格",
       "runCell": "运行单元格",
