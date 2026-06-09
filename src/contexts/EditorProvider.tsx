@@ -49,6 +49,14 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
+    // Skip reload if this connection's tabs are already in memory. Reloading
+    // from storage would clobber live tabs (which hold results) with cleaned
+    // storage copies that strip transient state like query results.
+    if (tabsRef.current.some((t) => t.connectionId === activeConnectionId)) {
+      setIsLoading(false);
+      return;
+    }
+
     const loadPreferences = async () => {
       setIsLoading(true);
       try {

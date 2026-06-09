@@ -479,6 +479,104 @@ describe("EditorProvider", () => {
     expect(tabId).toBe("");
   });
 
+  it("should preserve in-memory results when switching away from and back to a connection", async () => {
+    // Simulate the real storage round-trip: results are stripped on save, so a
+    // reload would return result-less tabs (this is what caused the bug).
+    const storage: Record<string, unknown> = {};
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      const a = args as { connectionId?: string; preferences?: unknown };
+      if (cmd === "load_editor_preferences") {
+        return Promise.resolve(storage[a.connectionId ?? ""] ?? null);
+      }
+      if (cmd === "save_editor_preferences") {
+        storage[a.connectionId ?? ""] = a.preferences;
+        return Promise.resolve(null);
+      }
+      if (cmd === "get_schema_snapshot") return Promise.resolve(mockSchema);
+      return Promise.resolve(null);
+    });
+
+    let currentConnectionId: string | null = "conn-1";
+
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(
+        DatabaseContext.Provider,
+        {
+          value: {
+            activeConnectionId: currentConnectionId,
+            activeDriver: "mysql",
+            activeTable: null,
+            activeConnectionName: "Test Connection",
+            activeDatabaseName: "testdb",
+            tables: [],
+            isLoadingTables: false,
+            connect: vi.fn(),
+            disconnect: vi.fn(),
+            setActiveTable: vi.fn(),
+            refreshTables: vi.fn(),
+          },
+        },
+        React.createElement(EditorProvider, null, children),
+      );
+
+    const { result, rerender } = renderHook(() => useEditor(), { wrapper });
+
+    // Wait for the async initial load to settle and create a default tab
+    await waitFor(() =>
+      expect(result.current.tabs[0]?.connectionId).toBe("conn-1"),
+    );
+
+    // Simulate a query result living in memory on the active tab
+    const tabId = result.current.tabs[0].id;
+    act(() => {
+      result.current.updateTab(tabId, {
+        query: "SELECT * FROM users",
+        result: { columns: ["id"], rows: [[1]] } as never,
+      });
+    });
+
+    expect(result.current.tabs[0].result).not.toBeNull();
+
+    // Switch to conn-2 (a fresh connection with its own initial tab)
+    currentConnectionId = "conn-2";
+    rerender();
+    await waitFor(() =>
+      expect(result.current.tabs[0]?.connectionId).toBe("conn-2"),
+    );
+
+    const countConn1Loads = () =>
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(
+          (c) =>
+            c[0] === "load_editor_preferences" &&
+            (c[1] as { connectionId?: string } | undefined)?.connectionId ===
+              "conn-1",
+        ).length;
+
+    const conn1LoadsBefore = countConn1Loads();
+
+    // Switch back to conn-1
+    currentConnectionId = "conn-1";
+    rerender();
+
+    // The active tab must still belong to conn-1
+    await waitFor(() =>
+      expect(result.current.tabs[0]?.connectionId).toBe("conn-1"),
+    );
+
+    // Give any (incorrect) async storage reload a chance to run, then assert
+    // that the live result was NOT clobbered by a result-less storage copy.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // No second reload from storage for an already-loaded connection
+    expect(countConn1Loads()).toBe(conn1LoadsBefore);
+    expect(result.current.tabs[0].query).toBe("SELECT * FROM users");
+    expect(result.current.tabs[0].result).not.toBeNull();
+  });
+
   it("should only show tabs for active connection", () => {
     // Create wrapper with conn-1 as active
     const wrapperConn1 = createWrapper("conn-1");
