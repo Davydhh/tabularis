@@ -17,7 +17,12 @@ import {
   addCellToCells,
   removeCellFromCells,
 } from "../../utils/notebook";
-import { reorderCells } from "../../utils/notebookDnd";
+import {
+  computeAutoScrollSpeed,
+  createCellDragPreview,
+  moveCell,
+  reorderCells,
+} from "../../utils/notebookDnd";
 import {
   serializeNotebook,
   deserializeNotebook,
@@ -98,10 +103,13 @@ export function NotebookView({
   const [isRunningAll, setIsRunningAll] = useState(false);
   const [runAllResult, setRunAllResult] = useState<RunAllResult | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  // Gap-based insertion point in [0, cells.length]; `null` while not dragging.
+  const [dropPos, setDropPos] = useState<number | null>(null);
   const cellsRef = useRef<NotebookCell[]>(notebook?.cells ?? []);
   const cellRefsMap = useRef<Map<string, HTMLDivElement>>(new Map());
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const autoScrollSpeedRef = useRef(0);
+  const autoScrollRafRef = useRef<number | null>(null);
   const notebookIdRef = useRef(tab.notebookId);
   const runCellRef = useRef<(cellId: string) => Promise<void>>(async () => {});
 
@@ -547,35 +555,103 @@ export function NotebookView({
       setDragIndex(index);
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", String(index));
+
+      // Show a small "held card" under the cursor instead of the browser's
+      // default faded in-place screenshot, so it feels like carrying the cell.
+      const cell = cellsRef.current[index];
+      if (cell) {
+        const preview = createCellDragPreview(document, {
+          name: cell.name?.trim() || t("editor.notebook.cellNamePlaceholder"),
+          typeLabel:
+            cell.type === "sql"
+              ? t("editor.notebook.sqlCell")
+              : t("editor.notebook.markdownCell"),
+          type: cell.type,
+        });
+        e.dataTransfer.setDragImage(preview, 12, 12);
+        // The browser snapshots the element synchronously on drag start; drop
+        // it from the DOM on the next tick.
+        setTimeout(() => preview.remove(), 0);
+      }
     },
-    [],
+    [t],
   );
+
+  const stopAutoScroll = useCallback(() => {
+    if (autoScrollRafRef.current !== null) {
+      cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
+    }
+    autoScrollSpeedRef.current = 0;
+  }, []);
+
+  // rAF loop so the list keeps scrolling while the cursor is held near an edge,
+  // even when no further dragover events fire (native DnD doesn't auto-scroll).
+  const stepAutoScroll = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const speed = autoScrollSpeedRef.current;
+    if (!container || speed === 0) {
+      autoScrollRafRef.current = null;
+      return;
+    }
+    container.scrollTop += speed;
+    autoScrollRafRef.current = requestAnimationFrame(stepAutoScroll);
+  }, []);
 
   const handleDragEnd = useCallback(() => {
     setDragIndex(null);
-    setDragOverIndex(null);
-  }, []);
+    setDropPos(null);
+    stopAutoScroll();
+  }, [stopAutoScroll]);
 
   const handleDragOver = useCallback(
     (index: number) => (e: React.DragEvent) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
-      setDragOverIndex(index);
+      // Above the cell's midpoint drops before it, below drops after it.
+      const rect = e.currentTarget.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      setDropPos(after ? index + 1 : index);
     },
     [],
   );
 
+  // Drive edge auto-scroll from the scroll container so a tall cell can't trap
+  // the drag — without this you can't reach the edge to scroll past it.
+  const handleContainerDragOver = useCallback(
+    (e: React.DragEvent) => {
+      if (dragIndex === null) return;
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const speed = computeAutoScrollSpeed(
+        container.getBoundingClientRect(),
+        e.clientY,
+      );
+      autoScrollSpeedRef.current = speed;
+      if (speed !== 0 && autoScrollRafRef.current === null) {
+        autoScrollRafRef.current = requestAnimationFrame(stepAutoScroll);
+      }
+    },
+    [dragIndex, stepAutoScroll],
+  );
+
   const handleDrop = useCallback(
-    (toIndex: number) => (e: React.DragEvent) => {
+    (index: number) => (e: React.DragEvent) => {
       e.preventDefault();
       const fromIndex = dragIndex;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const insertAt = e.clientY > rect.top + rect.height / 2 ? index + 1 : index;
       setDragIndex(null);
-      setDragOverIndex(null);
-      if (fromIndex === null || fromIndex === toIndex) return;
-      updateNotebook(reorderCells(cellsRef.current, fromIndex, toIndex));
+      setDropPos(null);
+      stopAutoScroll();
+      if (fromIndex === null) return;
+      updateNotebook(moveCell(cellsRef.current, fromIndex, insertAt));
     },
-    [dragIndex, updateNotebook],
+    [dragIndex, updateNotebook, stopAutoScroll],
   );
+
+  // Cancel any in-flight auto-scroll frame if the view unmounts mid-drag.
+  useEffect(() => stopAutoScroll, [stopAutoScroll]);
 
   const scrollToBottom = useCallback(() => {
     requestAnimationFrame(() => {
@@ -717,6 +793,23 @@ export function NotebookView({
 
   const historyView = historyTimeline(history, notebook ?? { cells });
 
+  // A drop line is shown in gap `pos` unless it'd leave the cell where it is.
+  const showLineAt = (pos: number) =>
+    dropPos === pos &&
+    dragIndex !== null &&
+    pos !== dragIndex &&
+    pos !== dragIndex + 1;
+  const renderDropLine = (placement: "top" | "bottom") => (
+    <div
+      className={`pointer-events-none absolute ${
+        placement === "top" ? "-top-1.5" : "-bottom-1.5"
+      } left-0 right-0 z-10 flex items-center gap-1`}
+    >
+      <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500 shadow-[0_0_6px_rgba(59,130,246,0.7)]" />
+      <span className="h-0.5 flex-1 rounded-full bg-blue-500 shadow-[0_0_6px_rgba(59,130,246,0.7)]" />
+    </div>
+  );
+
   return (
     <div className="flex flex-col h-full relative">
       <NotebookToolbar {...toolbarProps} />
@@ -728,7 +821,11 @@ export function NotebookView({
           onClose={() => setShowHistory(false)}
         />
       )}
-      <div ref={scrollContainerRef} className="flex-1 overflow-auto p-4 space-y-0">
+      <div
+        ref={scrollContainerRef}
+        onDragOver={handleContainerDragOver}
+        className="flex-1 overflow-auto p-4 space-y-0"
+      >
         <ParamsPanel params={params} onParamsChange={handleParamsChange} />
         <NotebookOutline
           cells={cells}
@@ -757,12 +854,9 @@ export function NotebookView({
             }}
             onDragOver={handleDragOver(index)}
             onDrop={handleDrop(index)}
-            className={`${
-              dragOverIndex === index && dragIndex !== index
-                ? "border-t-2 border-blue-500"
-                : ""
-            }`}
+            className="relative"
           >
+            {showLineAt(index) && renderDropLine("top")}
             <NotebookCellWrapper
               cell={cell}
               index={index}
@@ -801,6 +895,9 @@ export function NotebookView({
               onAddSql={() => addCell("sql", index)}
               onAddMarkdown={() => addCell("markdown", index)}
             />
+            {index === cells.length - 1 &&
+              showLineAt(cells.length) &&
+              renderDropLine("bottom")}
           </div>
         ))}
       </div>
