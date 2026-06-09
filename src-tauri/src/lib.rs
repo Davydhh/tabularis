@@ -31,6 +31,7 @@ pub mod explain_import_tests;
 pub mod export;
 #[cfg(test)]
 pub mod export_import_tests;
+pub mod headless;
 pub mod health_check;
 pub mod heartbeat;
 #[cfg(test)]
@@ -121,6 +122,21 @@ pub fn run() {
     }
 
     let args = cli::parse();
+
+    if let Some(command) = args.command {
+        // Terminal mode: run the subcommand and exit without ever touching
+        // the Tauri builder. The custom logger writes to stderr only, so
+        // stdout stays clean for piping (csv/json output).
+        let level = if args.debug {
+            log::LevelFilter::Debug
+        } else {
+            log::LevelFilter::Warn
+        };
+        init_logger(create_log_buffer(1000), level);
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+        let exit_code = rt.block_on(cli::run_command(command));
+        std::process::exit(exit_code);
+    }
 
     if args.mcp {
         // Initialize the logger so plugin-loading and driver RPC errors (which

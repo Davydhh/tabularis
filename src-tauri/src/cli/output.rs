@@ -1,0 +1,138 @@
+//! Pure formatting helpers for CLI output: value rendering, aligned ASCII
+//! tables, CSV and JSON. No I/O happens here so everything is unit-testable.
+
+use crate::models::QueryResult;
+use serde_json::Value;
+
+/// Render a single JSON cell value as plain text. Strings are printed raw
+/// (no quotes), `null` becomes `NULL`, everything else uses its compact JSON
+/// representation.
+pub fn format_value(value: &Value) -> String {
+    match value {
+        Value::Null => "NULL".to_string(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Convert a `QueryResult`'s rows into plain-text cells.
+pub fn result_to_rows(result: &QueryResult) -> Vec<Vec<String>> {
+    result
+        .rows
+        .iter()
+        .map(|row| row.iter().map(format_value).collect())
+        .collect()
+}
+
+/// Replace control characters that would break table alignment with visible
+/// escapes.
+fn sanitize_cell(cell: &str) -> String {
+    if cell.contains(['\n', '\r', '\t']) {
+        cell.chars()
+            .flat_map(|c| match c {
+                '\r' => "\\r".chars().collect::<Vec<_>>(),
+                '\n' => "\\n".chars().collect(),
+                '\t' => "\\t".chars().collect(),
+                other => vec![other],
+            })
+            .collect()
+    } else {
+        cell.to_string()
+    }
+}
+
+/// Render an aligned ASCII table (psql/mysql style) with a header row.
+///
+/// ```text
+/// +----+-------+
+/// | id | name  |
+/// +----+-------+
+/// | 1  | Alice |
+/// +----+-------+
+/// ```
+pub fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
+    let cols = headers.len();
+    let sanitized: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            (0..cols)
+                .map(|i| sanitize_cell(row.get(i).map(String::as_str).unwrap_or("")))
+                .collect()
+        })
+        .collect();
+
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
+    for row in &sanitized {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.chars().count());
+        }
+    }
+
+    let separator = {
+        let mut s = String::from("+");
+        for w in &widths {
+            s.push_str(&"-".repeat(w + 2));
+            s.push('+');
+        }
+        s
+    };
+
+    let render_row = |cells: &[String]| {
+        let mut line = String::from("|");
+        for (i, w) in widths.iter().enumerate() {
+            let cell = cells.get(i).map(String::as_str).unwrap_or("");
+            let pad = w - cell.chars().count();
+            line.push(' ');
+            line.push_str(cell);
+            line.push_str(&" ".repeat(pad + 1));
+            line.push('|');
+        }
+        line
+    };
+
+    let mut out = String::new();
+    out.push_str(&separator);
+    out.push('\n');
+    out.push_str(&render_row(headers));
+    out.push('\n');
+    out.push_str(&separator);
+    for row in &sanitized {
+        out.push('\n');
+        out.push_str(&render_row(row));
+    }
+    if !sanitized.is_empty() {
+        out.push('\n');
+        out.push_str(&separator);
+    }
+    out
+}
+
+/// Render rows as CSV with a header row.
+pub fn render_csv(headers: &[String], rows: &[Vec<String>]) -> Result<String, String> {
+    let mut writer = csv::Writer::from_writer(Vec::new());
+    writer.write_record(headers).map_err(|e| e.to_string())?;
+    for row in rows {
+        writer.write_record(row).map_err(|e| e.to_string())?;
+    }
+    let bytes = writer.into_inner().map_err(|e| e.to_string())?;
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+/// Render a query result as a JSON array of `{column: value}` objects,
+/// preserving the original JSON values (not their text rendering).
+pub fn render_json(result: &QueryResult) -> String {
+    let objects: Vec<Value> = result
+        .rows
+        .iter()
+        .map(|row| {
+            let map: serde_json::Map<String, Value> = result
+                .columns
+                .iter()
+                .cloned()
+                .zip(row.iter().cloned())
+                .collect();
+            Value::Object(map)
+        })
+        .collect();
+    serde_json::to_string_pretty(&objects).expect("serializing JSON values cannot fail")
+}

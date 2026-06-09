@@ -1,0 +1,134 @@
+use super::output::{format_value, render_csv, render_json, render_table, result_to_rows};
+use crate::models::QueryResult;
+use serde_json::json;
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|s| s.to_string()).collect()
+}
+
+fn sample_result() -> QueryResult {
+    QueryResult {
+        columns: strings(&["id", "name"]),
+        rows: vec![
+            vec![json!(1), json!("Alice")],
+            vec![json!(2), json!(null)],
+        ],
+        affected_rows: 0,
+        truncated: false,
+        pagination: None,
+    }
+}
+
+// --- format_value -----------------------------------------------------------
+
+#[test]
+fn format_value_renders_null_as_uppercase_null() {
+    assert_eq!(format_value(&json!(null)), "NULL");
+}
+
+#[test]
+fn format_value_renders_strings_without_quotes() {
+    assert_eq!(format_value(&json!("hello")), "hello");
+}
+
+#[test]
+fn format_value_renders_numbers_and_booleans() {
+    assert_eq!(format_value(&json!(42)), "42");
+    assert_eq!(format_value(&json!(1.5)), "1.5");
+    assert_eq!(format_value(&json!(true)), "true");
+}
+
+#[test]
+fn format_value_renders_nested_json_compactly() {
+    assert_eq!(format_value(&json!({"a": 1})), r#"{"a":1}"#);
+    assert_eq!(format_value(&json!([1, 2])), "[1,2]");
+}
+
+// --- result_to_rows ---------------------------------------------------------
+
+#[test]
+fn result_to_rows_maps_every_cell() {
+    let rows = result_to_rows(&sample_result());
+    assert_eq!(rows, vec![strings(&["1", "Alice"]), strings(&["2", "NULL"])]);
+}
+
+// --- render_table -----------------------------------------------------------
+
+#[test]
+fn render_table_aligns_columns_to_widest_cell() {
+    let table = render_table(
+        &strings(&["id", "name"]),
+        &[strings(&["1", "Alice"]), strings(&["10", "Bo"])],
+    );
+    let expected = "\
++----+-------+
+| id | name  |
++----+-------+
+| 1  | Alice |
+| 10 | Bo    |
++----+-------+";
+    assert_eq!(table, expected);
+}
+
+#[test]
+fn render_table_with_no_rows_prints_header_only() {
+    let table = render_table(&strings(&["id"]), &[]);
+    let expected = "\
++----+
+| id |
++----+";
+    assert_eq!(table, expected);
+}
+
+#[test]
+fn render_table_escapes_newlines_and_tabs() {
+    let table = render_table(&strings(&["v"]), &[strings(&["a\nb\tc"])]);
+    assert!(table.contains("a\\nb\\tc"));
+}
+
+#[test]
+fn render_table_pads_missing_cells() {
+    let table = render_table(&strings(&["a", "b"]), &[strings(&["1"])]);
+    assert!(table.contains("| 1 |   |"));
+}
+
+// --- render_csv -------------------------------------------------------------
+
+#[test]
+fn render_csv_writes_header_and_rows() {
+    let csv = render_csv(
+        &strings(&["id", "name"]),
+        &[strings(&["1", "Alice"])],
+    )
+    .unwrap();
+    assert_eq!(csv, "id,name\n1,Alice\n");
+}
+
+#[test]
+fn render_csv_quotes_cells_containing_separators() {
+    let csv = render_csv(&strings(&["v"]), &[strings(&["a,b"])]).unwrap();
+    assert_eq!(csv, "v\n\"a,b\"\n");
+}
+
+// --- render_json ------------------------------------------------------------
+
+#[test]
+fn render_json_emits_array_of_row_objects() {
+    let rendered = render_json(&sample_result());
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(
+        parsed,
+        json!([
+            {"id": 1, "name": "Alice"},
+            {"id": 2, "name": null},
+        ])
+    );
+}
+
+#[test]
+fn render_json_with_no_rows_emits_empty_array() {
+    let mut result = sample_result();
+    result.rows.clear();
+    let parsed: serde_json::Value = serde_json::from_str(&render_json(&result)).unwrap();
+    assert_eq!(parsed, json!([]));
+}
