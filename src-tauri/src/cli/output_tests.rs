@@ -1,4 +1,6 @@
-use super::output::{format_value, render_csv, render_json, render_table, result_to_rows};
+use super::output::{
+    format_value, render_csv, render_json, render_table, result_to_rows, sanitize_text,
+};
 use crate::models::QueryResult;
 use serde_json::json;
 
@@ -52,6 +54,34 @@ fn result_to_rows_maps_every_cell() {
     assert_eq!(rows, vec![strings(&["1", "Alice"]), strings(&["2", "NULL"])]);
 }
 
+// --- sanitize_text ----------------------------------------------------------
+
+#[test]
+fn sanitize_text_leaves_plain_text_untouched() {
+    assert_eq!(sanitize_text("hello world é 日本"), "hello world é 日本");
+}
+
+#[test]
+fn sanitize_text_escapes_newlines_carriage_returns_and_tabs() {
+    assert_eq!(sanitize_text("a\nb\rc\td"), "a\\nb\\rc\\td");
+}
+
+#[test]
+fn sanitize_text_escapes_ansi_escape_sequences() {
+    // OSC 52 clipboard write: ESC ] 52 ; c ; <payload> BEL
+    assert_eq!(
+        sanitize_text("\x1b]52;c;ZWNobyBwd25lZA==\x07"),
+        "\\u{1b}]52;c;ZWNobyBwd25lZA==\\u{7}"
+    );
+}
+
+#[test]
+fn sanitize_text_escapes_c1_control_characters() {
+    // U+009B is CSI, the single-character form of ESC [
+    assert_eq!(sanitize_text("a\u{9b}31mb"), "a\\u{9b}31mb");
+    assert_eq!(sanitize_text("del\u{7f}"), "del\\u{7f}");
+}
+
 // --- render_table -----------------------------------------------------------
 
 #[test]
@@ -84,6 +114,17 @@ fn render_table_with_no_rows_prints_header_only() {
 fn render_table_escapes_newlines_and_tabs() {
     let table = render_table(&strings(&["v"]), &[strings(&["a\nb\tc"])]);
     assert!(table.contains("a\\nb\\tc"));
+}
+
+#[test]
+fn render_table_escapes_control_characters_in_cells_and_headers() {
+    let table = render_table(
+        &strings(&["na\x1b[2Jme"]),
+        &[strings(&["\x1b]0;owned\x07"])],
+    );
+    assert!(!table.contains('\x1b'));
+    assert!(table.contains("na\\u{1b}[2Jme"));
+    assert!(table.contains("\\u{1b}]0;owned\\u{7}"));
 }
 
 #[test]

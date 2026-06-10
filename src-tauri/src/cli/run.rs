@@ -15,7 +15,9 @@ pub async fn run_command(command: CliCommand) -> i32 {
     match execute(command).await {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            // Error strings can embed server-controlled text; strip control
+            // characters before they reach the terminal.
+            eprintln!("Error: {}", output::sanitize_text(&e));
             1
         }
     }
@@ -123,7 +125,7 @@ fn print_names(names: &[String], as_json: bool) {
         println!("{}", serde_json::to_string_pretty(names).unwrap());
     } else {
         for name in names {
-            println!("{}", name);
+            println!("{}", output::sanitize_text(name));
         }
     }
 }
@@ -328,8 +330,19 @@ pub(crate) fn print_query_result(
         }
         OutputFormat::Json => println!("{}", output::render_json(result)),
         OutputFormat::Csv => {
-            let rows = output::result_to_rows(result);
-            match output::render_csv(&result.columns, &rows) {
+            let mut headers = result.columns.clone();
+            let mut rows = output::result_to_rows(result);
+            // On a TTY, CSV is read by a human: strip control characters so
+            // crafted cells cannot inject escape sequences. When piped, keep
+            // the data byte-exact for downstream tools.
+            if std::io::stdout().is_terminal() {
+                headers = headers.iter().map(|h| output::sanitize_text(h)).collect();
+                rows = rows
+                    .iter()
+                    .map(|row| row.iter().map(|c| output::sanitize_text(c)).collect())
+                    .collect();
+            }
+            match output::render_csv(&headers, &rows) {
                 Ok(csv) => print!("{}", csv),
                 Err(e) => eprintln!("Error: failed to render CSV: {}", e),
             }

@@ -24,21 +24,26 @@ pub fn result_to_rows(result: &QueryResult) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// Replace control characters that would break table alignment with visible
-/// escapes.
-fn sanitize_cell(cell: &str) -> String {
-    if cell.contains(['\n', '\r', '\t']) {
-        cell.chars()
-            .flat_map(|c| match c {
-                '\r' => "\\r".chars().collect::<Vec<_>>(),
-                '\n' => "\\n".chars().collect(),
-                '\t' => "\\t".chars().collect(),
-                other => vec![other],
-            })
-            .collect()
-    } else {
-        cell.to_string()
+/// Replace every control character (C0 including ESC, DEL, C1) with a visible
+/// escape. Database-sourced text reaches the terminal through here, so this
+/// is what stops crafted cell values or identifiers from injecting ANSI
+/// escape sequences (cursor movement, OSC 52 clipboard writes, title changes)
+/// — not just a cosmetic alignment fix.
+pub fn sanitize_text(text: &str) -> String {
+    if !text.chars().any(char::is_control) {
+        return text.to_string();
     }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.extend(c.escape_unicode()),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Render an aligned ASCII table (psql/mysql style) with a header row.
@@ -52,11 +57,14 @@ fn sanitize_cell(cell: &str) -> String {
 /// ```
 pub fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
     let cols = headers.len();
+    // Headers are database-sourced too (column names), so they get the same
+    // sanitization as cells.
+    let headers: Vec<String> = headers.iter().map(|h| sanitize_text(h)).collect();
     let sanitized: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
             (0..cols)
-                .map(|i| sanitize_cell(row.get(i).map(String::as_str).unwrap_or("")))
+                .map(|i| sanitize_text(row.get(i).map(String::as_str).unwrap_or("")))
                 .collect()
         })
         .collect();
@@ -93,7 +101,7 @@ pub fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
     let mut out = String::new();
     out.push_str(&separator);
     out.push('\n');
-    out.push_str(&render_row(headers));
+    out.push_str(&render_row(&headers));
     out.push('\n');
     out.push_str(&separator);
     for row in &sanitized {

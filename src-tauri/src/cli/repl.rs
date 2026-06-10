@@ -124,7 +124,7 @@ pub async fn run_shell(
                         .await
                     {
                         Ok(result) => print_query_result(&result, state.format, start.elapsed()),
-                        Err(e) => eprintln!("ERROR: {}", e),
+                        Err(e) => print_error(&e),
                     }
                 }
             }
@@ -171,25 +171,25 @@ async fn handle_meta(
                         state.show_db_in_prompt = true;
                         println!("Now using database {}", db);
                     }
-                    Err(e) => eprintln!("ERROR: cannot switch to {}: {}", db, e),
+                    Err(e) => print_error(&format!("cannot switch to {}: {}", db, e)),
                 }
             }
             None => println!("Current database: {}", params.database.primary()),
         },
         "\\l" => match driver.get_databases(params).await {
             Ok(names) => print_name_list(&names),
-            Err(e) => eprintln!("ERROR: {}", e),
+            Err(e) => print_error(&e),
         },
         "\\dn" => match driver.get_schemas(params).await {
             Ok(names) => print_name_list(&names),
-            Err(e) => eprintln!("ERROR: {}", e),
+            Err(e) => print_error(&e),
         },
         "\\dt" => match driver.get_tables(params, state.schema.as_deref()).await {
             Ok(tables) => {
                 let names: Vec<String> = tables.into_iter().map(|t| t.name).collect();
                 print_name_list(&names);
             }
-            Err(e) => eprintln!("ERROR: {}", e),
+            Err(e) => print_error(&e),
         },
         "\\d" => match arg {
             Some(table) => describe_table(state, params, driver, table).await,
@@ -250,15 +250,21 @@ async fn describe_table(
                 .collect();
             println!("{}", output::render_table(&headers, &rows));
         }
-        Err(e) => eprintln!("ERROR: {}", e),
+        Err(e) => print_error(&e),
     }
 }
 
 fn print_name_list(names: &[String]) {
     for name in names {
-        println!("{}", name);
+        println!("{}", output::sanitize_text(name));
     }
     println!("({} found)", names.len());
+}
+
+/// Print a driver/server error. The message can embed server-controlled text,
+/// so it goes through the same control-character sanitization as query output.
+fn print_error(error: &str) {
+    eprintln!("ERROR: {}", output::sanitize_text(error));
 }
 
 fn print_help() {
