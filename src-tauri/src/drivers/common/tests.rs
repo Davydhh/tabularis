@@ -1,9 +1,9 @@
 use super::{
     annotate_error_with_query, build_paginated_query, decode_blob_wire_format, encode_blob,
-    encode_blob_full, i64_to_json, is_explainable_query, is_select_query, parse_unsafe_bigint_string,
-    strip_leading_sql_comments, strip_limit_offset, u64_to_json, PaginationDialect,
-    DEFAULT_MAX_BLOB_SIZE, EXECUTED_QUERY_MARKER, JS_MAX_SAFE_INTEGER, JS_MAX_SAFE_UINT,
-    MAX_BLOB_PREVIEW_SIZE,
+    encode_blob_full, i64_to_json, is_explainable_query, is_paginatable_query, is_select_query,
+    parse_unsafe_bigint_string, strip_leading_sql_comments, strip_limit_offset, u64_to_json,
+    PaginationDialect, DEFAULT_MAX_BLOB_SIZE, EXECUTED_QUERY_MARKER, JS_MAX_SAFE_INTEGER,
+    JS_MAX_SAFE_UINT, MAX_BLOB_PREVIEW_SIZE,
 };
 
 #[test]
@@ -238,7 +238,9 @@ fn test_strip_limit_offset_table_name_contains_limit() {
 #[test]
 fn test_strip_limit_offset_table_name_contains_limit_with_real_limit() {
     assert_eq!(
-        strip_limit_offset("SELECT * FROM tapp_appointment_message_event_limit ORDER BY id LIMIT 10"),
+        strip_limit_offset(
+            "SELECT * FROM tapp_appointment_message_event_limit ORDER BY id LIMIT 10"
+        ),
         "SELECT * FROM tapp_appointment_message_event_limit ORDER BY id"
     );
 }
@@ -371,10 +373,7 @@ fn test_extract_user_offset_only_offset() {
 
 #[test]
 fn test_extract_user_offset_absent() {
-    assert_eq!(
-        super::extract_user_offset("SELECT * FROM t LIMIT 50"),
-        None
-    );
+    assert_eq!(super::extract_user_offset("SELECT * FROM t LIMIT 50"), None);
 }
 
 #[test]
@@ -503,6 +502,161 @@ fn test_build_paginated_query_falls_back_on_parse_error() {
     let q = "SELECT * FROM t WHERE LIMIT 5";
     let result = build_paginated_query(q, 100, 1, PaginationDialect::Postgres);
     assert_eq!(result, "SELECT * FROM t WHERE LIMIT 5 OFFSET 0");
+}
+
+#[test]
+fn test_is_paginatable_query_select_cte_values() {
+    assert!(is_paginatable_query(
+        "SELECT * FROM users",
+        PaginationDialect::Postgres
+    ));
+    assert!(is_paginatable_query(
+        "-- header\nSELECT * FROM users",
+        PaginationDialect::Postgres
+    ));
+    // CTEs parse to `Statement::Query` and must be paginatable even though
+    // they do not start with SELECT.
+    assert!(is_paginatable_query(
+        "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent",
+        PaginationDialect::Postgres
+    ));
+    assert!(is_paginatable_query(
+        "VALUES (1), (2)",
+        PaginationDialect::Postgres
+    ));
+}
+
+#[test]
+fn test_is_paginatable_query_excludes_non_queries() {
+    // These parse fine but reject a trailing LIMIT — they must not be widened
+    // into the pagination path.
+    assert!(!is_paginatable_query(
+        "SHOW TABLES",
+        PaginationDialect::MySql
+    ));
+    assert!(!is_paginatable_query(
+        "EXPLAIN SELECT 1",
+        PaginationDialect::Postgres
+    ));
+    assert!(!is_paginatable_query(
+        "INSERT INTO t VALUES (1)",
+        PaginationDialect::Postgres
+    ));
+    assert!(!is_paginatable_query(
+        "CREATE TABLE t (id INT)",
+        PaginationDialect::Sqlite
+    ));
+    assert!(!is_paginatable_query(
+        "SELECT 1; SELECT 2",
+        PaginationDialect::Postgres
+    ));
+}
+
+#[test]
+fn test_is_paginatable_query_parse_error_falls_back_to_prefix() {
+    // The parser rejects both; the SELECT prefix heuristic keeps the old
+    // routing so dialect quirks the parser misses still paginate.
+    assert!(is_paginatable_query(
+        "SELECT * FROM t WHERE LIMIT 5",
+        PaginationDialect::Postgres
+    ));
+    assert!(!is_paginatable_query(
+        "TOTALLY NOT SQL",
+        PaginationDialect::Postgres
+    ));
+}
+
+#[test]
+fn test_build_paginated_query_cte() {
+    let q = "WITH recent AS (SELECT * FROM orders ORDER BY id) SELECT * FROM recent";
+    let result = build_paginated_query(q, 100, 1, PaginationDialect::Postgres);
+    assert_eq!(
+        result,
+        "WITH recent AS (SELECT * FROM orders ORDER BY id) SELECT * FROM recent LIMIT 101 OFFSET 0"
+    );
+}
+
+#[test]
+fn test_build_paginated_query_cte_with_outer_limit() {
+    // Only the outer LIMIT is stripped; the one inside the CTE body stays.
+    let q = "WITH recent AS (SELECT * FROM orders LIMIT 1000) SELECT * FROM recent LIMIT 50";
+    let result = build_paginated_query(q, 100, 1, PaginationDialect::Postgres);
+    assert_eq!(
+        result,
+        "WITH recent AS (SELECT * FROM orders LIMIT 1000) SELECT * FROM recent LIMIT 50 OFFSET 0"
+    );
+}
+
+#[test]
+fn test_build_paginated_query_limit_all() {
+    // A bare `LIMIT ALL` is folded into "no limit clause" by the parser, so it
+    // never reaches the AST and must be located by the textual trailing check.
+    let q = "SELECT * FROM t ORDER BY id LIMIT ALL";
+    let result = build_paginated_query(q, 100, 1, PaginationDialect::Postgres);
+    assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 101 OFFSET 0");
+}
+
+#[test]
+fn test_build_paginated_query_limit_all_with_offset() {
+    // The span anchors to the OFFSET value; the dangling `LIMIT ALL` before it
+    // must be peeled off too, not left to collide with the appended clause.
+    let q = "SELECT * FROM t ORDER BY id LIMIT ALL OFFSET 5";
+    let result = build_paginated_query(q, 100, 1, PaginationDialect::Postgres);
+    assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 101 OFFSET 5");
+}
+
+#[test]
+fn test_build_paginated_query_limit_with_trailing_line_comment() {
+    // The `--` used to survive the strip and comment out the appended clause,
+    // silently disabling pagination.
+    let q = "SELECT * FROM t ORDER BY id LIMIT 2000 -- pagination note";
+    let result = build_paginated_query(q, 100, 1, PaginationDialect::Postgres);
+    assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 101 OFFSET 0");
+}
+
+#[test]
+fn test_build_paginated_query_limit_with_trailing_block_comment() {
+    let q = "SELECT * FROM t LIMIT 50 /* cap */";
+    let result = build_paginated_query(q, 100, 1, PaginationDialect::Postgres);
+    assert_eq!(result, "SELECT * FROM t LIMIT 50 OFFSET 0");
+}
+
+#[test]
+fn test_build_paginated_query_expression_limit() {
+    // A non-literal LIMIT cannot be honoured as a cap, but the span cut must
+    // still strip it (the token scan does not recognise this shape).
+    let q = "SELECT * FROM t LIMIT 10 + 5";
+    let result = build_paginated_query(q, 100, 1, PaginationDialect::Postgres);
+    assert_eq!(result, "SELECT * FROM t LIMIT 101 OFFSET 0");
+}
+
+#[test]
+fn test_build_paginated_query_multiline_with_trailing_comment() {
+    // Exercises the line/column → byte translation behind the span cut.
+    let q = "SELECT *\nFROM t\nORDER BY id\nLIMIT 25 -- note";
+    let result = build_paginated_query(q, 100, 1, PaginationDialect::Postgres);
+    assert_eq!(result, "SELECT *\nFROM t\nORDER BY id LIMIT 25 OFFSET 0");
+}
+
+#[test]
+fn test_build_paginated_query_comment_between_limit_and_value() {
+    // The span anchor lands after the comment, so the keyword walk-back fails
+    // and the token-scan safety net strips the clause instead.
+    let q = "SELECT * FROM t LIMIT /* cap */ 10";
+    let result = build_paginated_query(q, 100, 1, PaginationDialect::MySql);
+    assert_eq!(result, "SELECT * FROM t LIMIT 10 OFFSET 0");
+}
+
+#[test]
+fn test_strip_limit_offset_trailing_comment() {
+    assert_eq!(
+        strip_limit_offset("SELECT * FROM t LIMIT 10 -- note"),
+        "SELECT * FROM t"
+    );
+    assert_eq!(
+        strip_limit_offset("SELECT * FROM t LIMIT 10 /* note */"),
+        "SELECT * FROM t"
+    );
 }
 
 #[test]
@@ -655,7 +809,10 @@ fn test_parse_unsafe_bigint_string_returns_outside_safe_range() {
         parse_unsafe_bigint_string("-9007199254740992"),
         Some(-JS_MAX_SAFE_INTEGER - 1)
     );
-    assert_eq!(parse_unsafe_bigint_string(&i64::MAX.to_string()), Some(i64::MAX));
+    assert_eq!(
+        parse_unsafe_bigint_string(&i64::MAX.to_string()),
+        Some(i64::MAX)
+    );
 }
 
 #[test]

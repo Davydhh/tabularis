@@ -16,7 +16,7 @@ use crate::models::{
     TableColumn, TableInfo, TriggerInfo, ViewInfo,
 };
 use crate::pool_manager::get_postgres_pool;
-use binding::{PgValueOptions, bind_pg_value, build_pk_predicate};
+use binding::{bind_pg_value, build_pk_predicate, PgValueOptions};
 use client::{execute, format_pg_error, get_client, query_all, query_one};
 pub use explain::explain_query;
 use extract::extract_value;
@@ -804,11 +804,14 @@ async fn exec_on_pg_client(
         });
     }
 
-    let is_select = crate::drivers::common::is_select_query(query);
+    let is_paginatable = crate::drivers::common::is_paginatable_query(
+        query,
+        crate::drivers::common::PaginationDialect::Postgres,
+    );
     let mut manual_limit = limit;
     let mut truncated = false;
 
-    let (final_query, pagination_meta) = if is_select && limit.is_some() {
+    let (final_query, pagination_meta) = if is_paginatable && limit.is_some() {
         let l = limit.unwrap();
         let data_query = crate::drivers::common::build_paginated_query(
             query,
@@ -823,16 +826,14 @@ async fn exec_on_pg_client(
     };
 
     let pg_params: Vec<i32> = vec![];
-    let mut rows_stream = std::pin::pin!(
-        client
-            .query_raw(&final_query, &pg_params)
-            .await
-            .map_err(|e| crate::drivers::common::annotate_error_with_query(
-                format_pg_error(&e),
-                &final_query,
-                query
-            ))?
-    );
+    let mut rows_stream = std::pin::pin!(client
+        .query_raw(&final_query, &pg_params)
+        .await
+        .map_err(|e| crate::drivers::common::annotate_error_with_query(
+            format_pg_error(&e),
+            &final_query,
+            query
+        ))?);
 
     let mut columns: Vec<String> = Vec::new();
     let mut json_rows = Vec::new();
@@ -1345,7 +1346,9 @@ pub async fn drop_trigger(
 // Plugin wrapper
 // ============================================================
 
-use crate::drivers::driver_trait::{DatabaseDriver, DriverCapabilities, PluginManifest, SqlDialect};
+use crate::drivers::driver_trait::{
+    DatabaseDriver, DriverCapabilities, PluginManifest, SqlDialect,
+};
 use async_trait::async_trait;
 use std::collections::HashMap;
 
@@ -1604,7 +1607,13 @@ impl DatabaseDriver for PostgresDriver {
         table_name: &str,
         schema: Option<&str>,
     ) -> Result<String, String> {
-        get_trigger_definition(params, trigger_name, table_name, self.resolve_schema(schema)).await
+        get_trigger_definition(
+            params,
+            trigger_name,
+            table_name,
+            self.resolve_schema(schema),
+        )
+        .await
     }
 
     async fn create_trigger(
@@ -1623,7 +1632,13 @@ impl DatabaseDriver for PostgresDriver {
         table_name: &str,
         schema: Option<&str>,
     ) -> Result<(), String> {
-        drop_trigger(params, trigger_name, table_name, self.resolve_schema(schema)).await
+        drop_trigger(
+            params,
+            trigger_name,
+            table_name,
+            self.resolve_schema(schema),
+        )
+        .await
     }
 
     async fn execute_query(

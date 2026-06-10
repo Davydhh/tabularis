@@ -939,13 +939,16 @@ async fn exec_on_mysql_conn(
         });
     }
 
-    let is_select = crate::drivers::common::is_select_query(query);
+    let is_paginatable = crate::drivers::common::is_paginatable_query(
+        query,
+        crate::drivers::common::PaginationDialect::MySql,
+    );
     let mut pagination: Option<Pagination> = None;
     let final_query: String;
     let mut manual_limit = limit;
     let mut truncated = false;
 
-    if is_select && limit.is_some() {
+    if is_paginatable && limit.is_some() {
         let l = limit.unwrap();
 
         final_query = crate::drivers::common::build_paginated_query(
@@ -1107,7 +1110,11 @@ pub async fn get_trigger_definition(
 ) -> Result<String, String> {
     let pool = get_mysql_pool(params).await?;
     let qualified = match schema {
-        Some(s) => format!("`{}`.`{}`", escape_identifier(s), escape_identifier(trigger_name)),
+        Some(s) => format!(
+            "`{}`.`{}`",
+            escape_identifier(s),
+            escape_identifier(trigger_name)
+        ),
         None => format!("`{}`", escape_identifier(trigger_name)),
     };
     let query = format!("SHOW CREATE TRIGGER {}", qualified);
@@ -1149,7 +1156,11 @@ pub async fn drop_trigger(
 ) -> Result<(), String> {
     let pool = get_mysql_pool(params).await?;
     let qualified = match schema {
-        Some(s) => format!("`{}`.`{}`", escape_identifier(s), escape_identifier(trigger_name)),
+        Some(s) => format!(
+            "`{}`.`{}`",
+            escape_identifier(s),
+            escape_identifier(trigger_name)
+        ),
         None => format!("`{}`", escape_identifier(trigger_name)),
     };
     let query = format!("DROP TRIGGER IF EXISTS {}", qualified);
@@ -1315,10 +1326,8 @@ impl DatabaseDriver for MysqlDriver {
         } else {
             format!("{}:{}", user, encode(raw_pass))
         };
-        let max_allowed_packet = mysql_numeric_setting(
-            "maxAllowedPacket",
-            DEFAULT_MYSQL_MAX_ALLOWED_PACKET,
-        );
+        let max_allowed_packet =
+            mysql_numeric_setting("maxAllowedPacket", DEFAULT_MYSQL_MAX_ALLOWED_PACKET);
         let socket_timeout =
             mysql_numeric_setting("socketTimeout", DEFAULT_MYSQL_SOCKET_TIMEOUT_MS);
         let connect_timeout =

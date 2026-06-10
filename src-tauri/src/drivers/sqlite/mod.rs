@@ -532,12 +532,15 @@ async fn exec_on_sqlite_conn(
         });
     }
 
-    let is_select = crate::drivers::common::is_select_query(query);
+    let is_paginatable = crate::drivers::common::is_paginatable_query(
+        query,
+        crate::drivers::common::PaginationDialect::Sqlite,
+    );
     let mut pagination: Option<Pagination> = None;
     let final_query: String;
     let mut manual_limit = limit;
 
-    if is_select && limit.is_some() {
+    if is_paginatable && limit.is_some() {
         let l = limit.unwrap();
 
         final_query = crate::drivers::common::build_paginated_query(
@@ -768,7 +771,10 @@ pub async fn get_view_columns(
 }
 
 pub async fn get_triggers(params: &ConnectionParams) -> Result<Vec<TriggerInfo>, String> {
-    log::debug!("SQLite: Fetching triggers for database: {}", params.database);
+    log::debug!(
+        "SQLite: Fetching triggers for database: {}",
+        params.database
+    );
     let pool = get_sqlite_pool(params).await?;
     let rows = sqlx::query(
         "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger' ORDER BY name ASC",
@@ -826,13 +832,11 @@ pub async fn get_trigger_definition(
     trigger_name: &str,
 ) -> Result<String, String> {
     let pool = get_sqlite_pool(params).await?;
-    let row = sqlx::query(
-        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
-    )
-    .bind(trigger_name)
-    .fetch_one(&pool)
-    .await
-    .map_err(|e| format!("Failed to get trigger definition: {}", e))?;
+    let row = sqlx::query("SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?")
+        .bind(trigger_name)
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| format!("Failed to get trigger definition: {}", e))?;
     let sql: String = row.try_get("sql").unwrap_or_default();
     Ok(sql)
 }
@@ -846,10 +850,7 @@ pub async fn create_trigger(params: &ConnectionParams, trigger_sql: &str) -> Res
     Ok(())
 }
 
-pub async fn drop_trigger(
-    params: &ConnectionParams,
-    trigger_name: &str,
-) -> Result<(), String> {
+pub async fn drop_trigger(params: &ConnectionParams, trigger_name: &str) -> Result<(), String> {
     let pool = get_sqlite_pool(params).await?;
     let sql = format!(
         "DROP TRIGGER IF EXISTS \"{}\"",
@@ -866,7 +867,9 @@ pub async fn drop_trigger(
 // Plugin wrapper
 // ============================================================
 
-use crate::drivers::driver_trait::{DatabaseDriver, DriverCapabilities, PluginManifest, SqlDialect};
+use crate::drivers::driver_trait::{
+    DatabaseDriver, DriverCapabilities, PluginManifest, SqlDialect,
+};
 use async_trait::async_trait;
 use std::collections::HashMap;
 

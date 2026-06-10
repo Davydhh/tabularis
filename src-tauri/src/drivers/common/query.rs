@@ -1,13 +1,13 @@
-use sqlparser::ast::{Expr, LimitClause, Offset, OffsetRows, Statement, Value};
+use sqlparser::ast::{Expr, LimitClause, Offset, OffsetRows, Spanned, Statement, Value};
 use sqlparser::dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 
 /// Check if a query is a SELECT statement.
 ///
 /// Leading SQL comments are stripped before checking, matching
-/// [`returns_result_set`] and [`is_explainable_query`] — drivers rely
-/// on this to route commented-header SELECTs through the pagination
-/// path.
+/// [`returns_result_set`] and [`is_explainable_query`]. Pagination routing
+/// uses [`is_paginatable_query`], which derives the answer from the parse and
+/// only falls back to this prefix check when the parser rejects the input.
 pub fn is_select_query(query: &str) -> bool {
     strip_leading_sql_comments(query)
         .trim_start()
@@ -131,13 +131,16 @@ fn read_quoted(chars: &[(usize, char)], i: &mut usize, quote: char) -> String {
 /// - Double-quoted identifiers ("...")
 /// - Backtick-quoted identifiers (`...`)
 /// - Parenthesized groups (treated as single tokens)
+/// - Comments (`-- …` and `/* … */`), skipped like the parser does
 /// - Whitespace as delimiter
 ///
 /// This prevents keywords like LIMIT or OFFSET from being matched
 /// inside string literals, quoted identifiers, or table names such as
-/// `tapp_appointment_message_event_limit`. Each token is returned with
-/// its starting byte offset so callers can slice the original input
-/// instead of rebuilding it from tokens.
+/// `tapp_appointment_message_event_limit` — and keeps a trailing
+/// comment from shielding a LIMIT/OFFSET clause from the strip/extract
+/// scans. Each token is returned with its starting byte offset so
+/// callers can slice the original input instead of rebuilding it from
+/// tokens.
 fn tokenize_sql_with_pos(sql: &str) -> Vec<(String, usize)> {
     let mut tokens: Vec<(String, usize)> = Vec::new();
     let chars: Vec<(usize, char)> = sql.char_indices().collect();
@@ -155,6 +158,25 @@ fn tokenize_sql_with_pos(sql: &str) -> Vec<(String, usize)> {
         if c == '\'' || c == '"' || c == '`' {
             let token = read_quoted(&chars, &mut i, c);
             tokens.push((token, start_byte));
+            continue;
+        }
+
+        if c == '-' && i + 1 < len && chars[i + 1].1 == '-' {
+            while i < len && chars[i].1 != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        if c == '/' && i + 1 < len && chars[i + 1].1 == '*' {
+            i += 2;
+            while i < len {
+                if chars[i].1 == '*' && i + 1 < len && chars[i + 1].1 == '/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
             continue;
         }
 
@@ -198,6 +220,10 @@ fn tokenize_sql_with_pos(sql: &str) -> Vec<(String, usize)> {
         while i < len {
             let ch = chars[i].1;
             if ch.is_whitespace() || ch == '(' || ch == '\'' || ch == '"' || ch == '`' {
+                break;
+            }
+            let next = chars.get(i + 1).map(|&(_, n)| n);
+            if (ch == '-' && next == Some('-')) || (ch == '/' && next == Some('*')) {
                 break;
             }
             token.push(ch);
@@ -306,6 +332,21 @@ impl PaginationDialect {
     }
 }
 
+/// Decide whether a query can be auto-paginated by appending LIMIT/OFFSET.
+///
+/// Derived from the parse rather than a keyword prefix, so CTEs
+/// (`WITH … SELECT`) and `VALUES` qualify while `SHOW`/`EXPLAIN`/DDL — which
+/// parse to non-`Query` statements and reject a trailing `LIMIT` — do not.
+/// When the parser cannot handle the input at all, falls back to
+/// [`is_select_query`] so dialect quirks the parser misses keep the previous
+/// prefix-based routing.
+pub fn is_paginatable_query(query: &str, dialect: PaginationDialect) -> bool {
+    match Parser::parse_sql(dialect.parser_dialect().as_ref(), query) {
+        Ok(statements) => statements.len() == 1 && matches!(statements[0], Statement::Query(_)),
+        Err(_) => is_select_query(query),
+    }
+}
+
 /// LIMIT/OFFSET read from a query's parsed AST.
 struct ParsedPagination {
     /// User-supplied LIMIT, if it is a plain numeric literal.
@@ -314,6 +355,11 @@ struct ParsedPagination {
     user_offset: u32,
     /// Whether the query carries a top-level LIMIT/OFFSET clause to strip.
     has_limit_clause: bool,
+    /// Byte offset in the original query where that clause's leading keyword
+    /// starts, derived from the AST's source span. `None` when the clause has
+    /// nothing to anchor a span to (`LIMIT ALL` parses to no expressions) —
+    /// the caller then strips via the token scan instead.
+    clause_start: Option<usize>,
 }
 
 /// Resolve a numeric-literal expression to a `u32`.
@@ -327,6 +373,93 @@ fn eval_u32(expr: &Expr) -> Option<u32> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Convert a 1-based line/column location (as reported by the parser's source
+/// spans) into a byte offset in `sql`. Mirrors the parser's position tracking:
+/// `\n` starts a new line, every other character (including `\r`) advances the
+/// column by one.
+fn location_to_byte(sql: &str, line: u64, column: u64) -> Option<usize> {
+    let mut cur_line = 1;
+    let mut cur_column = 1;
+    for (idx, ch) in sql.char_indices() {
+        if cur_line == line && cur_column == column {
+            return Some(idx);
+        }
+        if ch == '\n' {
+            cur_line += 1;
+            cur_column = 1;
+        } else {
+            cur_column += 1;
+        }
+    }
+    None
+}
+
+/// Byte offset where the standalone keyword `kw` starts, given that
+/// `query[..end]` should end with it (ignoring trailing whitespace). Returns
+/// `None` when the keyword is absent or glued to an identifier or quote
+/// (`mylimit`, `t.limit`), signalling the caller to fall back to the token
+/// scan rather than cut mid-identifier.
+fn trailing_keyword_start(query: &str, end: usize, kw: &str) -> Option<usize> {
+    let trimmed_len = query[..end].trim_end().len();
+    let start = trimmed_len.checked_sub(kw.len())?;
+    if !query.is_char_boundary(start) || !query[start..trimmed_len].eq_ignore_ascii_case(kw) {
+        return None;
+    }
+    match query[..start].chars().next_back() {
+        Some(c) if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$' | '"' | '\'' | '`') => {
+            None
+        }
+        _ => Some(start),
+    }
+}
+
+/// Locate where a parsed top-level LIMIT/OFFSET clause begins in the source
+/// text, including its leading keyword.
+///
+/// The AST span starts at the clause's first *value* (the keyword belongs to
+/// no sub-expression), so this walks back over the keyword that must
+/// immediately precede it. `LIMIT ALL` parses to no expression, so
+/// `LIMIT ALL OFFSET n` anchors to the OFFSET value and the dangling
+/// `LIMIT ALL` is peeled off as well (a bare `LIMIT ALL` never reaches the
+/// AST at all — see [`trailing_limit_all_start`]).
+fn limit_clause_start(query: &str, clause: &LimitClause) -> Option<usize> {
+    let span = clause.span();
+    if span.start.line == 0 {
+        return None;
+    }
+    let value_start = location_to_byte(query, span.start.line, span.start.column)?;
+    if let Some(limit_kw) = trailing_keyword_start(query, value_start, "LIMIT") {
+        return Some(limit_kw);
+    }
+    let offset_kw = trailing_keyword_start(query, value_start, "OFFSET")?;
+    match trailing_keyword_start(query, offset_kw, "ALL")
+        .and_then(|all_kw| trailing_keyword_start(query, all_kw, "LIMIT"))
+    {
+        Some(limit_kw) => Some(limit_kw),
+        None => Some(offset_kw),
+    }
+}
+
+/// Byte offset of a trailing top-level `LIMIT ALL`, if the query ends with one
+/// (ignoring trailing comments).
+///
+/// The parser swallows a bare `LIMIT ALL` — it means "no limit", so
+/// `Query::limit_clause` comes back `None` and there is no AST node to anchor
+/// a span to. Without this textual check the clause would survive the strip
+/// and collide with the appended pagination clause.
+fn trailing_limit_all_start(query: &str) -> Option<usize> {
+    let tokens = tokenize_sql_with_pos(query.trim_end());
+    let n = tokens.len();
+    if n >= 2
+        && tokens[n - 2].0.eq_ignore_ascii_case("LIMIT")
+        && tokens[n - 1].0.eq_ignore_ascii_case("ALL")
+    {
+        Some(tokens[n - 2].1)
+    } else {
+        None
     }
 }
 
@@ -345,37 +478,59 @@ fn parse_pagination(query: &str, dialect: PaginationDialect) -> Option<ParsedPag
         return None;
     };
 
-    // FETCH FIRST … ROWS ONLY is out of scope; defer to the fallback path so
-    // its behaviour is unchanged rather than producing a mixed clause.
+    // FETCH FIRST … ROWS ONLY is out of scope; defer to the fallback path.
+    // NB: the fallback does not strip FETCH, so a paginated FETCH query gets a
+    // trailing LIMIT/OFFSET appended (a mixed clause the DB rejects).
     if q.fetch.is_some() {
         return None;
     }
 
+    // Locking clauses (FOR UPDATE/SHARE) follow LIMIT, and cutting the clause
+    // at its span would silently drop the lock along with it — defer those to
+    // the fallback path too.
+    if !q.locks.is_empty() {
+        return None;
+    }
+
     match &q.limit_clause {
-        None => Some(ParsedPagination {
-            user_limit: None,
-            user_offset: 0,
-            has_limit_clause: false,
-        }),
-        Some(LimitClause::LimitOffset { limit, offset, .. }) => Some(ParsedPagination {
-            user_limit: limit.as_ref().and_then(eval_u32),
-            user_offset: offset
-                .as_ref()
-                .and_then(|o| eval_u32(&o.value))
-                .unwrap_or(0),
-            has_limit_clause: true,
-        }),
-        Some(LimitClause::OffsetCommaLimit { offset, limit }) => Some(ParsedPagination {
-            user_limit: eval_u32(limit),
-            user_offset: eval_u32(offset).unwrap_or(0),
-            has_limit_clause: true,
-        }),
+        None => {
+            // A bare `LIMIT ALL` never reaches the AST (the parser folds it
+            // into "no limit clause"), so it must be located textually.
+            let clause_start = trailing_limit_all_start(query);
+            Some(ParsedPagination {
+                user_limit: None,
+                user_offset: 0,
+                has_limit_clause: clause_start.is_some(),
+                clause_start,
+            })
+        }
+        Some(clause) => {
+            let (user_limit, user_offset) = match clause {
+                LimitClause::LimitOffset { limit, offset, .. } => (
+                    limit.as_ref().and_then(eval_u32),
+                    offset
+                        .as_ref()
+                        .and_then(|o| eval_u32(&o.value))
+                        .unwrap_or(0),
+                ),
+                LimitClause::OffsetCommaLimit { offset, limit } => {
+                    (eval_u32(limit), eval_u32(offset).unwrap_or(0))
+                }
+            };
+            Some(ParsedPagination {
+                user_limit,
+                user_offset,
+                has_limit_clause: true,
+                clause_start: limit_clause_start(query, clause),
+            })
+        }
     }
 }
 
 /// True for the keyword/value tokens that make up a trailing LIMIT/OFFSET
-/// clause (standard, MySQL comma, and FETCH spellings), so a LIMIT/OFFSET that
-/// appears mid-query is never mistaken for the trailing pagination clause.
+/// clause (standard, MySQL comma, `LIMIT ALL`, and FETCH spellings), so a
+/// LIMIT/OFFSET that appears mid-query is never mistaken for the trailing
+/// pagination clause.
 ///
 /// The numeric arm accepts digits interleaved with commas so MySQL's
 /// `LIMIT <offset>,<count>` is recognised even when written without spaces
@@ -385,11 +540,15 @@ fn is_pagination_tail_token(tok: &str) -> bool {
     let upper = tok.to_uppercase();
     matches!(
         upper.as_str(),
-        "LIMIT" | "OFFSET" | "BY" | "ROW" | "ROWS" | "ONLY" | "NEXT" | "FIRST" | ","
+        "LIMIT" | "OFFSET" | "ALL" | "BY" | "ROW" | "ROWS" | "ONLY" | "NEXT" | "FIRST" | ","
     ) || (!tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit() || c == ','))
 }
 
 /// Cut the query immediately before its trailing top-level LIMIT/OFFSET clause.
+///
+/// Safety net for the rare clause the parser reported but whose span could not
+/// be anchored to the source ([`limit_clause_start`] returned `None`, e.g.
+/// `LIMIT ALL` alone or a comment wedged between keyword and value).
 ///
 /// Reuses [`tokenize_sql_with_pos`], which collapses parenthesised groups into
 /// a single token, so a LIMIT/OFFSET inside a subquery is never seen and only
@@ -426,11 +585,14 @@ fn number_expr(n: u32) -> Expr {
 ///
 /// The user's LIMIT/OFFSET are read from the parsed AST (using `dialect`), so
 /// dialect-specific forms such as MySQL's `LIMIT <offset>, <count>` and
-/// `OFFSET` before `LIMIT` are understood. When the parser cannot handle the
-/// input, it falls back to a token-aware heuristic scan. The appended
-/// pagination clause is rendered from a [`LimitClause`] AST node and
-/// concatenated to the verbatim sliced base, so leading comments, inline
-/// hints, and the body's formatting are preserved.
+/// `OFFSET` before `LIMIT` are understood. The clause is stripped by cutting
+/// at its AST source span, so shapes the token heuristics cannot recognise
+/// (`LIMIT ALL`, non-literal expressions, trailing comments) cannot desync
+/// from what the parser saw. When the parser cannot handle the input, it
+/// falls back to a token-aware heuristic scan. The appended pagination clause
+/// is rendered from a [`LimitClause`] AST node and concatenated to the
+/// verbatim sliced base, so leading comments, inline hints, and the body's
+/// formatting are preserved.
 ///
 /// When the user wrote an explicit LIMIT, it is honoured as a cap on the total
 /// number of rows returned across all pages. A user-supplied OFFSET is honoured
@@ -447,7 +609,11 @@ pub fn build_paginated_query(
 
     let (user_limit, user_offset, base) = match parse_pagination(query, dialect) {
         Some(parsed) => {
-            let base = if parsed.has_limit_clause {
+            let base = if let Some(cut) = parsed.clause_start {
+                // Cut at the clause's source span; everything from the clause
+                // onward (including any trailing comment) is dropped.
+                query[..cut].trim_end().to_string()
+            } else if parsed.has_limit_clause {
                 strip_at_limit_keyword(query)
             } else {
                 query.trim_end().to_string()
