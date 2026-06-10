@@ -335,6 +335,10 @@ pub fn run() {
             commands::get_view_columns,
             commands::set_window_title,
             commands::open_er_diagram_window,
+            // Terminal CLI shortcut
+            commands::get_cli_install_status,
+            commands::install_cli_shortcut,
+            commands::remove_cli_shortcut,
             explain_import::load_explain_from_file,
             explain_import::get_pending_explain_file,
             explain_import::open_visual_explain_window,
