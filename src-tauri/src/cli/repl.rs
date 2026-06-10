@@ -1,15 +1,21 @@
-//! Interactive SQL shell (`tabularis shell <connection>`).
+//! Interactive SQL shell (`tabularis query <connection>`).
 //!
 //! Reads SQL statements terminated by `;` (multi-line input supported) and
 //! psql-style backslash meta commands, executing them against the resolved
-//! driver. Line editing and persistent history come from rustyline.
+//! driver. Line editing, persistent history and tab completion come from
+//! rustyline; completion candidates are filled in the background by
+//! [`super::complete::spawn_catalog_refresh`].
 
+use super::complete::{spawn_catalog_refresh, Catalog, ShellHelper};
 use super::run::{effective_limit, override_database, print_query_result};
-use super::{output, OutputFormat};
+use super::{output, statements, OutputFormat};
+use crate::drivers::driver_trait::DatabaseDriver;
 use crate::headless;
-use crate::models::DatabaseSelection;
+use crate::models::{ConnectionParams, DatabaseSelection};
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use rustyline::history::DefaultHistory;
+use rustyline::Editor;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 const HISTORY_FILE: &str = "cli_history.txt";
@@ -18,9 +24,14 @@ struct ShellState {
     format: OutputFormat,
     limit: u32,
     schema: Option<String>,
+    /// Page long table-like results through `$PAGER`/`less` (toggle: \pager).
+    pager: bool,
     /// Include the current database in the prompt — on for multi-database
     /// connections and after a `\use` switch.
     show_db_in_prompt: bool,
+    /// Shared with the rustyline helper; refreshed in the background on
+    /// startup and after `\use`/`\schema` switches.
+    catalog: Arc<RwLock<Catalog>>,
 }
 
 pub async fn run_shell(
@@ -61,10 +72,23 @@ pub async fn run_shell(
         format,
         limit,
         schema,
+        pager: true,
         show_db_in_prompt: multi_db || switched,
+        catalog: Arc::new(RwLock::new(Catalog::default())),
     };
 
-    let mut editor = DefaultEditor::new().map_err(|e| e.to_string())?;
+    let mut editor: Editor<ShellHelper, DefaultHistory> =
+        Editor::new().map_err(|e| e.to_string())?;
+    editor.set_helper(Some(ShellHelper {
+        catalog: state.catalog.clone(),
+    }));
+    spawn_catalog_refresh(
+        state.catalog.clone(),
+        driver.clone(),
+        params.clone(),
+        state.schema.clone(),
+    );
+
     let history_path = crate::paths::get_app_config_dir().join(HISTORY_FILE);
     let _ = editor.load_history(&history_path);
 
@@ -92,7 +116,7 @@ pub async fn run_shell(
                         || trimmed.eq_ignore_ascii_case("quit")
                     {
                         let _ = editor.add_history_entry(trimmed);
-                        if handle_meta(trimmed, &mut state, &mut params, &*driver).await {
+                        if handle_meta(trimmed, &mut state, &mut params, &driver).await {
                             break;
                         }
                         continue;
@@ -111,21 +135,7 @@ pub async fn run_shell(
                     if sql.is_empty() {
                         continue;
                     }
-
-                    let start = Instant::now();
-                    match driver
-                        .execute_query(
-                            &params,
-                            sql,
-                            effective_limit(state.limit),
-                            1,
-                            state.schema.as_deref(),
-                        )
-                        .await
-                    {
-                        Ok(result) => print_query_result(&result, state.format, start.elapsed()),
-                        Err(e) => print_error(&e),
-                    }
+                    execute_statement(sql, &state, &params, &driver).await;
                 }
             }
             // Ctrl-C: drop any half-typed statement, keep the shell alive.
@@ -145,12 +155,73 @@ pub async fn run_shell(
     Ok(())
 }
 
+/// Execute one SQL statement and print its result or error.
+async fn execute_statement(
+    sql: &str,
+    state: &ShellState,
+    params: &ConnectionParams,
+    driver: &Arc<dyn DatabaseDriver>,
+) -> bool {
+    let start = Instant::now();
+    match driver
+        .execute_query(
+            params,
+            sql,
+            effective_limit(state.limit),
+            1,
+            state.schema.as_deref(),
+        )
+        .await
+    {
+        Ok(result) => {
+            print_query_result(&result, state.format, start.elapsed(), state.pager);
+            true
+        }
+        Err(e) => {
+            print_error(&e);
+            false
+        }
+    }
+}
+
+/// Run every statement of a SQL file (`\i <file>`), stopping at the first
+/// error but keeping the shell alive.
+async fn run_script(
+    path: &str,
+    state: &ShellState,
+    params: &ConnectionParams,
+    driver: &Arc<dyn DatabaseDriver>,
+) {
+    let script = match std::fs::read_to_string(path) {
+        Ok(script) => script,
+        Err(e) => {
+            print_error(&format!("cannot read {}: {}", path, e));
+            return;
+        }
+    };
+    let statements = statements::split_sql_statements(&script);
+    if statements.is_empty() {
+        println!("No statements found in {}", path);
+        return;
+    }
+    for (index, statement) in statements.iter().enumerate() {
+        if !execute_statement(statement, state, params, driver).await {
+            eprintln!(
+                "(stopped at statement {} of {})",
+                index + 1,
+                statements.len()
+            );
+            return;
+        }
+    }
+}
+
 /// Handle a meta command. Returns `true` when the shell should exit.
 async fn handle_meta(
     input: &str,
     state: &mut ShellState,
-    params: &mut crate::models::ConnectionParams,
-    driver: &dyn crate::drivers::driver_trait::DatabaseDriver,
+    params: &mut ConnectionParams,
+    driver: &Arc<dyn DatabaseDriver>,
 ) -> bool {
     let mut parts = input.split_whitespace();
     let command = parts.next().unwrap_or("");
@@ -169,6 +240,12 @@ async fn handle_meta(
                     Ok(()) => {
                         *params = candidate;
                         state.show_db_in_prompt = true;
+                        spawn_catalog_refresh(
+                            state.catalog.clone(),
+                            driver.clone(),
+                            params.clone(),
+                            state.schema.clone(),
+                        );
                         println!("Now using database {}", db);
                     }
                     Err(e) => print_error(&format!("cannot switch to {}: {}", db, e)),
@@ -195,12 +272,27 @@ async fn handle_meta(
             Some(table) => describe_table(state, params, driver, table).await,
             None => eprintln!("Usage: \\d <table>"),
         },
+        // The path is everything after the command, so paths with spaces work.
+        "\\i" => match input["\\i".len()..].trim() {
+            "" => eprintln!("Usage: \\i <file>"),
+            path => run_script(path, state, params, driver).await,
+        },
         "\\f" => match arg {
             Some("table") => state.format = OutputFormat::Table,
+            Some("expanded") => state.format = OutputFormat::Expanded,
             Some("json") => state.format = OutputFormat::Json,
             Some("csv") => state.format = OutputFormat::Csv,
-            _ => eprintln!("Usage: \\f <table|json|csv>"),
+            _ => eprintln!("Usage: \\f <table|expanded|json|csv>"),
         },
+        "\\x" => {
+            if state.format == OutputFormat::Expanded {
+                state.format = OutputFormat::Table;
+                println!("Expanded display off");
+            } else {
+                state.format = OutputFormat::Expanded;
+                println!("Expanded display on");
+            }
+        }
         "\\limit" => match arg.and_then(|a| a.parse::<u32>().ok()) {
             Some(n) => {
                 state.limit = n;
@@ -214,11 +306,29 @@ async fn handle_meta(
         },
         "\\schema" => {
             state.schema = arg.map(String::from);
+            spawn_catalog_refresh(
+                state.catalog.clone(),
+                driver.clone(),
+                params.clone(),
+                state.schema.clone(),
+            );
             match &state.schema {
                 Some(s) => println!("Schema set to {}", s),
                 None => println!("Schema reset to driver default"),
             }
         }
+        "\\pager" => match arg {
+            Some("on") => {
+                state.pager = true;
+                println!("Pager enabled");
+            }
+            Some("off") => {
+                state.pager = false;
+                println!("Pager disabled");
+            }
+            None => println!("Pager is {}", if state.pager { "on" } else { "off" }),
+            _ => eprintln!("Usage: \\pager <on|off>"),
+        },
         _ => eprintln!("Unknown command: {}  (\\? for help)", command),
     }
     false
@@ -226,8 +336,8 @@ async fn handle_meta(
 
 async fn describe_table(
     state: &ShellState,
-    params: &crate::models::ConnectionParams,
-    driver: &dyn crate::drivers::driver_trait::DatabaseDriver,
+    params: &ConnectionParams,
+    driver: &Arc<dyn DatabaseDriver>,
     table: &str,
 ) {
     let schema = state.schema.as_deref();
@@ -277,10 +387,14 @@ fn print_help() {
   \\dn                  List schemas
   \\dt                  List tables (in the current schema)
   \\d <table>           Show the columns of a table
-  \\f <table|json|csv>  Set the output format
+  \\i <file>            Run the SQL statements from a file
+  \\f <table|expanded|json|csv>  Set the output format
+  \\x                   Toggle expanded (vertical) output
   \\limit <n>           Set the row limit (0 = unlimited)
   \\schema [name]       Set or reset the current schema
+  \\pager <on|off>      Enable or disable the pager for long results
 
+Tab completes SQL keywords, table/column names and meta commands.
 Any other input is buffered as SQL and executed when a line ends with ';'.
 Each statement runs on its own pooled connection, so session state
 (SET, BEGIN/COMMIT, temp tables) does not persist between statements."

@@ -9,19 +9,28 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+pub mod complete;
 pub mod install;
 pub mod output;
+pub mod pager;
 pub mod repl;
 pub mod run;
+pub mod statements;
 
 #[cfg(test)]
 pub mod args_tests;
+#[cfg(test)]
+pub mod complete_tests;
 #[cfg(all(test, unix))]
 pub mod install_tests;
 #[cfg(test)]
 pub mod output_tests;
 #[cfg(test)]
+pub mod pager_tests;
+#[cfg(test)]
 pub mod run_tests;
+#[cfg(test)]
+pub mod statements_tests;
 
 pub use run::run_command;
 
@@ -51,6 +60,8 @@ pub struct Args {
 pub enum OutputFormat {
     /// Aligned ASCII table (psql-like)
     Table,
+    /// One block per record with `column | value` lines (psql `\x` style)
+    Expanded,
     /// JSON array of row objects
     Json,
     /// RFC 4180 CSV with a header row
@@ -128,6 +139,10 @@ pub enum CliCommand {
         /// SQL to execute. When omitted, opens an interactive shell
         /// (or reads the SQL from stdin when piped)
         sql: Option<String>,
+        /// Read the SQL from a file instead; every `;`-terminated statement
+        /// in it runs in order, stopping at the first error
+        #[arg(long, short = 'f', value_name = "FILE", conflicts_with = "sql")]
+        file: Option<std::path::PathBuf>,
         /// Database to target (multi-database connections default to the
         /// first one; changeable inside the shell with \use)
         #[arg(long, short = 'd')]

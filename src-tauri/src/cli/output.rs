@@ -115,6 +115,37 @@ pub fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
     out
 }
 
+/// Render rows vertically, one block per record (psql `\x` style):
+///
+/// ```text
+/// -[ RECORD 1 ]-
+/// id   | 1
+/// name | Alice
+/// ```
+///
+/// Wide result sets stay readable because every column gets its own line.
+pub fn render_expanded(headers: &[String], rows: &[Vec<String>]) -> String {
+    let headers: Vec<String> = headers.iter().map(|h| sanitize_text(h)).collect();
+    let name_width = headers.iter().map(|h| h.chars().count()).max().unwrap_or(0);
+
+    let mut out = String::new();
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!("-[ RECORD {} ]-", i + 1));
+        for (j, header) in headers.iter().enumerate() {
+            let cell = sanitize_text(row.get(j).map(String::as_str).unwrap_or(""));
+            out.push('\n');
+            out.push_str(header);
+            out.push_str(&" ".repeat(name_width - header.chars().count()));
+            out.push_str(" | ");
+            out.push_str(&cell);
+        }
+    }
+    out
+}
+
 /// Render rows as CSV with a header row.
 pub fn render_csv(headers: &[String], rows: &[Vec<String>]) -> Result<String, String> {
     let mut writer = csv::Writer::from_writer(Vec::new());

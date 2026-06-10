@@ -58,11 +58,23 @@ async fn execute(command: CliCommand) -> Result<(), String> {
         CliCommand::Query {
             connection,
             sql,
+            file,
             database,
             limit,
             format,
             schema,
-        } => cmd_query(&connection, sql, database, limit, format, schema.as_deref()).await,
+        } => {
+            cmd_query(
+                &connection,
+                sql,
+                file,
+                database,
+                limit,
+                format,
+                schema.as_deref(),
+            )
+            .await
+        }
         CliCommand::InstallCli { dir, force } => super::install::run_install(dir, force),
     }
 }
@@ -255,16 +267,19 @@ async fn cmd_describe(
 async fn cmd_query(
     connection: &str,
     sql: Option<String>,
+    file: Option<std::path::PathBuf>,
     database: Option<String>,
     limit: u32,
     format: OutputFormat,
     schema: Option<&str>,
 ) -> Result<(), String> {
-    let sql = match sql {
-        Some(s) => s,
+    let script = match (sql, file) {
+        (Some(s), _) => s,
+        (None, Some(path)) => std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?,
         // No SQL argument: with an interactive terminal this becomes the
         // shell; with piped input the SQL is read from stdin instead.
-        None if std::io::stdin().is_terminal() => {
+        (None, None) if std::io::stdin().is_terminal() => {
             return super::repl::run_shell(
                 connection,
                 database,
@@ -274,7 +289,7 @@ async fn cmd_query(
             )
             .await;
         }
-        None => {
+        (None, None) => {
             let mut buf = String::new();
             std::io::stdin()
                 .read_to_string(&mut buf)
@@ -282,18 +297,31 @@ async fn cmd_query(
             buf
         }
     };
-    let sql = sql.trim();
-    if sql.is_empty() {
-        return Err("No SQL provided (pass it as an argument or pipe it via stdin)".to_string());
+    let statements = super::statements::split_sql_statements(&script);
+    if statements.is_empty() {
+        return Err(
+            "No SQL provided (pass it as an argument, via --file, or pipe it via stdin)"
+                .to_string(),
+        );
     }
 
     let (_, mut params, driver) = headless::resolve_db_driver(connection).await?;
     override_database(&mut params, database);
-    let start = Instant::now();
-    let result = driver
-        .execute_query(&params, sql, effective_limit(limit), 1, schema)
-        .await?;
-    print_query_result(&result, format, start.elapsed());
+    let multiple = statements.len() > 1;
+    for (index, statement) in statements.iter().enumerate() {
+        let start = Instant::now();
+        let result = driver
+            .execute_query(&params, statement, effective_limit(limit), 1, schema)
+            .await
+            .map_err(|e| {
+                if multiple {
+                    format!("Statement {} failed: {}", index + 1, e)
+                } else {
+                    e
+                }
+            })?;
+        print_query_result(&result, format, start.elapsed(), true);
+    }
     Ok(())
 }
 
@@ -308,11 +336,13 @@ pub(crate) fn effective_limit(limit: u32) -> Option<u32> {
 
 /// Print a query result in the requested format. Statements that return no
 /// result set (INSERT/UPDATE/DDL) print an `OK` line with the affected-row
-/// count instead.
+/// count instead. Table-like formats go through the pager when `pager` is set
+/// and stdout is an interactive terminal.
 pub(crate) fn print_query_result(
     result: &QueryResult,
     format: OutputFormat,
     elapsed: std::time::Duration,
+    pager: bool,
 ) {
     let ms = elapsed.as_millis();
 
@@ -321,11 +351,18 @@ pub(crate) fn print_query_result(
         return;
     }
 
+    let truncated = if result.truncated { ", truncated" } else { "" };
     match format {
         OutputFormat::Table => {
             let rows = output::result_to_rows(result);
-            println!("{}", output::render_table(&result.columns, &rows));
-            let truncated = if result.truncated { ", truncated" } else { "" };
+            super::pager::print_paged(&output::render_table(&result.columns, &rows), pager);
+            println!("({} rows{} in {} ms)", rows.len(), truncated, ms);
+        }
+        OutputFormat::Expanded => {
+            let rows = output::result_to_rows(result);
+            if !rows.is_empty() {
+                super::pager::print_paged(&output::render_expanded(&result.columns, &rows), pager);
+            }
             println!("({} rows{} in {} ms)", rows.len(), truncated, ms);
         }
         OutputFormat::Json => println!("{}", output::render_json(result)),

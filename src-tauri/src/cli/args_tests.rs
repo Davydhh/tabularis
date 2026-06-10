@@ -47,6 +47,7 @@ fn query_with_sql_parses_with_defaults() {
         Some(CliCommand::Query {
             connection,
             sql,
+            file,
             database,
             limit,
             format,
@@ -54,6 +55,7 @@ fn query_with_sql_parses_with_defaults() {
         }) => {
             assert_eq!(connection, "conn-1");
             assert_eq!(sql.as_deref(), Some("select 1"));
+            assert_eq!(file, None);
             assert_eq!(database, None);
             assert_eq!(limit, 100);
             assert_eq!(format, OutputFormat::Table);
@@ -92,9 +94,52 @@ fn query_format_accepts_known_values_only() {
         other => panic!("expected Query, got {:?}", other),
     }
 
-    let err = Args::try_parse_from(["tabularis", "query", "c", "s", "--format", "xml"])
-        .unwrap_err();
+    let err =
+        Args::try_parse_from(["tabularis", "query", "c", "s", "--format", "xml"]).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidValue);
+}
+
+#[test]
+fn query_format_accepts_expanded() {
+    let args = Args::try_parse_from([
+        "tabularis",
+        "query",
+        "c",
+        "select 1",
+        "--format",
+        "expanded",
+    ])
+    .unwrap();
+    match args.command {
+        Some(CliCommand::Query { format, .. }) => assert_eq!(format, OutputFormat::Expanded),
+        other => panic!("expected Query, got {:?}", other),
+    }
+}
+
+#[test]
+fn query_accepts_file_flag() {
+    let args = Args::try_parse_from(["tabularis", "query", "conn-1", "-f", "script.sql"]).unwrap();
+    match args.command {
+        Some(CliCommand::Query { sql, file, .. }) => {
+            assert!(sql.is_none());
+            assert_eq!(file.as_deref(), Some(std::path::Path::new("script.sql")));
+        }
+        other => panic!("expected Query, got {:?}", other),
+    }
+}
+
+#[test]
+fn query_rejects_sql_argument_together_with_file() {
+    let err = Args::try_parse_from([
+        "tabularis",
+        "query",
+        "conn-1",
+        "select 1",
+        "--file",
+        "a.sql",
+    ])
+    .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
 }
 
 #[test]
@@ -117,7 +162,14 @@ fn connections_alias_ls_works() {
 #[test]
 fn tables_parses_database_and_schema() {
     let args = Args::try_parse_from([
-        "tabularis", "tables", "conn-1", "-d", "db2", "--schema", "public", "--json",
+        "tabularis",
+        "tables",
+        "conn-1",
+        "-d",
+        "db2",
+        "--schema",
+        "public",
+        "--json",
     ])
     .unwrap();
     match args.command {
@@ -145,8 +197,7 @@ fn describe_requires_table_argument() {
 #[test]
 fn install_cli_parses_dir_and_force() {
     let args =
-        Args::try_parse_from(["tabularis", "install-cli", "--dir", "/tmp/bin", "--force"])
-            .unwrap();
+        Args::try_parse_from(["tabularis", "install-cli", "--dir", "/tmp/bin", "--force"]).unwrap();
     match args.command {
         Some(CliCommand::InstallCli { dir, force }) => {
             assert_eq!(dir.as_deref(), Some(std::path::Path::new("/tmp/bin")));

@@ -1,5 +1,6 @@
 use super::output::{
-    format_value, render_csv, render_json, render_table, result_to_rows, sanitize_text,
+    format_value, render_csv, render_expanded, render_json, render_table, result_to_rows,
+    sanitize_text,
 };
 use crate::models::QueryResult;
 use serde_json::json;
@@ -11,10 +12,7 @@ fn strings(values: &[&str]) -> Vec<String> {
 fn sample_result() -> QueryResult {
     QueryResult {
         columns: strings(&["id", "name"]),
-        rows: vec![
-            vec![json!(1), json!("Alice")],
-            vec![json!(2), json!(null)],
-        ],
+        rows: vec![vec![json!(1), json!("Alice")], vec![json!(2), json!(null)]],
         affected_rows: 0,
         truncated: false,
         pagination: None,
@@ -51,7 +49,10 @@ fn format_value_renders_nested_json_compactly() {
 #[test]
 fn result_to_rows_maps_every_cell() {
     let rows = result_to_rows(&sample_result());
-    assert_eq!(rows, vec![strings(&["1", "Alice"]), strings(&["2", "NULL"])]);
+    assert_eq!(
+        rows,
+        vec![strings(&["1", "Alice"]), strings(&["2", "NULL"])]
+    );
 }
 
 // --- sanitize_text ----------------------------------------------------------
@@ -133,15 +134,58 @@ fn render_table_pads_missing_cells() {
     assert!(table.contains("| 1 |   |"));
 }
 
+// --- render_expanded ----------------------------------------------------------
+
+#[test]
+fn render_expanded_prints_one_block_per_record() {
+    let text = render_expanded(
+        &strings(&["id", "name"]),
+        &[strings(&["1", "Alice"]), strings(&["2", "Bo"])],
+    );
+    let expected = "\
+-[ RECORD 1 ]-
+id   | 1
+name | Alice
+-[ RECORD 2 ]-
+id   | 2
+name | Bo";
+    assert_eq!(text, expected);
+}
+
+#[test]
+fn render_expanded_aligns_column_names_to_the_widest() {
+    let text = render_expanded(&strings(&["a", "long_name"]), &[strings(&["1", "2"])]);
+    assert!(text.contains("a         | 1"));
+    assert!(text.contains("long_name | 2"));
+}
+
+#[test]
+fn render_expanded_with_no_rows_is_empty() {
+    assert_eq!(render_expanded(&strings(&["id"]), &[]), "");
+}
+
+#[test]
+fn render_expanded_pads_missing_cells() {
+    let text = render_expanded(&strings(&["a", "b"]), &[strings(&["1"])]);
+    assert!(text.contains("b | "));
+}
+
+#[test]
+fn render_expanded_escapes_control_characters_in_names_and_cells() {
+    let text = render_expanded(
+        &strings(&["na\x1b[2Jme"]),
+        &[strings(&["\x1b]0;owned\x07"])],
+    );
+    assert!(!text.contains('\x1b'));
+    assert!(text.contains("na\\u{1b}[2Jme"));
+    assert!(text.contains("\\u{1b}]0;owned\\u{7}"));
+}
+
 // --- render_csv -------------------------------------------------------------
 
 #[test]
 fn render_csv_writes_header_and_rows() {
-    let csv = render_csv(
-        &strings(&["id", "name"]),
-        &[strings(&["1", "Alice"])],
-    )
-    .unwrap();
+    let csv = render_csv(&strings(&["id", "name"]), &[strings(&["1", "Alice"])]).unwrap();
     assert_eq!(csv, "id,name\n1,Alice\n");
 }
 
