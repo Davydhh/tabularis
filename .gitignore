@@ -23,6 +23,11 @@ dist-ssr
 *.sln
 *.sw?
 
+# Flatpak build artifacts
+flatpak/.flatpak-builder/
+flatpak/build-dir/
+flatpak/*.local-test.yml
+
 #Serena
 .serena
 

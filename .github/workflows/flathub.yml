@@ -1,0 +1,138 @@
+name: Update Flathub
+
+# Opens (or updates) a pull request on the Flathub packaging repo
+# (flathub/io.github.tabularisdb.Tabularis) on every published release.
+#
+# Prerequisites:
+#   - The Flathub repo must already exist (created by Flathub after the
+#     initial submission is accepted — see docs/flatpak-publish-guide.md).
+#   - A FLATHUB_TOKEN secret with write access to that repo (a fine-grained
+#     PAT or a deploy/PAT able to push branches and open PRs).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (without v prefix, e.g. 0.13.1)'
+        required: true
+
+env:
+  APP_ID: io.github.tabularisdb.Tabularis
+  FLATHUB_REPO: flathub/io.github.tabularisdb.Tabularis
+
+jobs:
+  flathub-pr:
+    # Skip prereleases (same convention as snap.yml / aur.yml)
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version + ref
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tabularis at the release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Resolve commit SHA for the tag
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Regenerate vendored Flatpak sources
+        run: bash flatpak/generate-sources.sh
+
+      - name: Resolve pnpm tarball checksum
+        id: pnpm
+        run: |
+          PNPM_VER="$(node -p "require('./package.json').packageManager.split('@')[1]")"
+          curl -fsSL "https://registry.npmjs.org/pnpm/-/pnpm-${PNPM_VER}.tgz" -o /tmp/pnpm.tgz
+          echo "version=${PNPM_VER}" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum /tmp/pnpm.tgz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Render manifest with pinned tag + commit
+        run: |
+          set -euo pipefail
+          M="flatpak/${APP_ID}.yml"
+          # Pin git tag + commit
+          sed -i "s|tag: vVERSION|tag: ${{ steps.version.outputs.tag }}|" "$M"
+          sed -i "s|commit: COMMIT|commit: ${{ steps.commit.outputs.sha }}|" "$M"
+          # Keep the pnpm source in sync with package.json's packageManager
+          sed -i -E "s|pnpm-[0-9.]+\.tgz|pnpm-${{ steps.pnpm.outputs.version }}.tgz|" "$M"
+          sed -i -E "s|sha256: [a-f0-9]{64}$|sha256: ${{ steps.pnpm.outputs.sha256 }}|" "$M"
+          echo "----- rendered manifest -----"
+          cat "$M"
+
+      - name: Update metainfo <releases>
+        run: |
+          set -euo pipefail
+          M="flatpak/${APP_ID}.metainfo.xml"
+          VERSION="${{ steps.version.outputs.version }}"
+          DATE="$(date -u +%Y-%m-%d)"
+          if ! grep -q "version=\"${VERSION}\"" "$M"; then
+            sed -i "s|  <releases>|  <releases>\n    <release version=\"${VERSION}\" date=\"${DATE}\" />|" "$M"
+          fi
+
+      - name: Checkout Flathub packaging repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.FLATHUB_REPO }}
+          token: ${{ secrets.FLATHUB_TOKEN }}
+          path: flathub-repo
+          fetch-depth: 0
+
+      - name: Copy updated packaging files
+        run: |
+          set -euo pipefail
+          cp "flatpak/${APP_ID}.yml"            "flathub-repo/${APP_ID}.yml"
+          cp "flatpak/${APP_ID}.metainfo.xml"   "flathub-repo/${APP_ID}.metainfo.xml"
+          cp "flatpak/${APP_ID}.desktop"        "flathub-repo/${APP_ID}.desktop"
+          cp "flatpak/cargo-sources.json"       "flathub-repo/cargo-sources.json"
+          cp "flatpak/node-sources.json"        "flathub-repo/node-sources.json"
+
+      - name: Commit, push branch and open/refresh PR
+        env:
+          GH_TOKEN: ${{ secrets.FLATHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd flathub-repo
+          BRANCH="update-${{ steps.version.outputs.version }}"
+          git config user.name "tabularis-bot"
+          git config user.email "andrea@debbaweb.it"
+          git checkout -B "$BRANCH"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to submit."
+            exit 0
+          fi
+          git commit -m "Update to ${{ steps.version.outputs.tag }}"
+          git push --force origin "$BRANCH"
+          # Flathub builds PRs against the default branch (master).
+          if ! gh pr view "$BRANCH" >/dev/null 2>&1; then
+            gh pr create \
+              --title "Update to ${{ steps.version.outputs.tag }}" \
+              --body "Automated update to ${{ steps.version.outputs.tag }} from TabularisDB/tabularis." \
+              --base master \
+              --head "$BRANCH"
+          fi
